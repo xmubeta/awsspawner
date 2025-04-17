@@ -35,6 +35,9 @@ c.AWSSpawner.task_cluster_name = 'your-ecs-cluster-name'
 c.AWSSpawner.task_definition_family = 'jupyter-notebook'
 c.AWSSpawner.task_container_name = 'notebook'
 
+# Optional: Specify task definition ARN directly (bypasses find/create logic)
+# c.AWSSpawner.task_definition_arn = 'arn:aws:ecs:us-east-1:123456789012:task-definition/jupyter-notebook:1'
+
 # Network configuration
 c.AWSSpawner.task_security_groups = ['sg-xxxxxxxxxxxxxxxxx']
 c.AWSSpawner.task_subnets = ['subnet-xxxxxxxxxxxxxxxxx']

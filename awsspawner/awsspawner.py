@@ -39,6 +39,7 @@ class AWSSpawner(Spawner):
     task_cluster_name = Unicode(config=True)
     task_container_name = Unicode(config=True)
     task_definition_family = Unicode(config=True)
+    task_definition_arn = Unicode("", config=True, help="ARN of the task definition to use directly")
     task_security_groups = List(trait=Unicode, config=True)
     task_subnets = List(trait=Unicode, config=True)
     notebook_scheme = Unicode(config=True)
@@ -175,7 +176,12 @@ class AWSSpawner(Spawner):
         task_port = self.port
         session = self.authentication.get_session(self.aws_region)
 
-        task_definition = _find_or_create_task_definition(self.log, session, self.task_definition_family, self.task_container_name, self.image)
+        if self.task_definition_arn:
+            # Use the specified task definition ARN directly
+            task_definition = {"found": True, "arn": self.task_definition_arn}
+        else:
+            # Find or create task definition if not specified
+            task_definition = _find_or_create_task_definition(self.log, session, self.task_definition_family, self.task_container_name, self.image)
 
         if task_definition["arn"] is None:
             raise Exception("TaskDefinition not found.")
