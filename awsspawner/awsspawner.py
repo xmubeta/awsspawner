@@ -46,6 +46,7 @@ class AWSSpawner(Spawner):
     notebook_args = List(trait=Unicode, config=True)
     args_join = Unicode(config=True)
     image = Unicode("", config=True)
+    task_owner_tag_name = Unicode("Jupyter-User", config=True, help="Name of the tag used to identify the owner of the task")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -208,6 +209,7 @@ class AWSSpawner(Spawner):
                 self.memory_reservation,
                 self.args_join,
                 self.user.name,  # Pass the username for tagging
+                self.task_owner_tag_name,  # Pass the tag name
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -370,6 +372,7 @@ def _run_task(
     memory_reservation,
     args_join="",
     username="",
+    owner_tag_name="",
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -405,7 +408,7 @@ def _run_task(
         },
         "tags": [
             {
-                "key": "Owner",
+                "key": owner_tag_name,
                 "value": username
             }
         ]

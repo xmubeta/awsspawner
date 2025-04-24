@@ -8,7 +8,7 @@ Spawns JupyterHub single user servers in Docker containers running in AWS ECS Ta
 - Support for EC2, Fargate, and Fargate Spot launch types
 - Configurable resource allocation (CPU, memory)
 - User profiles for different resource configurations
-- Automatic tagging of tasks with Owner tag (using username)
+- Automatic tagging of tasks with configurable owner tag (using username)
 - Support for custom Docker images
 
 ## Installation
@@ -74,6 +74,9 @@ c.AWSSpawner.task_role_arn = 'arn:aws:iam::123456789012:role/your-task-role'
 
 # Docker image (optional - will use the one from task definition if not specified)
 c.AWSSpawner.image = 'jupyter/minimal-notebook:latest'
+
+# Task tagging (optional)
+c.AWSSpawner.task_owner_tag_name = 'Jupyter-User'  # Default value
 ```
 
 ## Authentication
