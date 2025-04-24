@@ -47,6 +47,8 @@ class AWSSpawner(Spawner):
     args_join = Unicode(config=True)
     image = Unicode("", config=True)
     task_owner_tag_name = Unicode("Jupyter-User", config=True, help="Name of the tag used to identify the owner of the task")
+    propagate_tags = Unicode("TASK_DEFINITION", config=True, help="How to propagate tags. Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'")
+    enable_ecs_managed_tags = Bool(True, config=True, help="Whether to enable Amazon ECS managed tags for the task")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -411,7 +413,9 @@ def _run_task(
                 "key": owner_tag_name,
                 "value": username
             }
-        ]
+        ],
+        "propagateTags": self.propagate_tags,
+        "enableECSManagedTags": self.enable_ecs_managed_tags
     }
 
     if task_definition_arn != traitlets.Undefined:

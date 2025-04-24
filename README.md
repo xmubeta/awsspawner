@@ -77,6 +77,10 @@ c.AWSSpawner.image = 'jupyter/minimal-notebook:latest'
 
 # Task tagging (optional)
 c.AWSSpawner.task_owner_tag_name = 'Jupyter-User'  # Default value
+
+# ECS task settings (optional)
+c.AWSSpawner.propagate_tags = 'TASK_DEFINITION'  # Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'
+c.AWSSpawner.enable_ecs_managed_tags = True  # Enable ECS managed tags
 ```
 
 ## Authentication
