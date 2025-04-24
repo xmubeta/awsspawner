@@ -212,6 +212,8 @@ class AWSSpawner(Spawner):
                 self.args_join,
                 self.user.name,  # Pass the username for tagging
                 self.task_owner_tag_name,  # Pass the tag name
+                self.propagate_tags,  # Pass propagate_tags parameter
+                self.enable_ecs_managed_tags,  # Pass enable_ecs_managed_tags parameter
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -375,6 +377,8 @@ def _run_task(
     args_join="",
     username="",
     owner_tag_name="",
+    propagate_tags=None,
+    enable_ecs_managed_tags=None,
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -413,10 +417,16 @@ def _run_task(
                 "key": owner_tag_name,
                 "value": username
             }
-        ],
-        "propagateTags": self.propagate_tags,
-        "enableECSManagedTags": self.enable_ecs_managed_tags
+        ]
     }
+    
+    # Add propagateTags if provided
+    if propagate_tags is not None:
+        dict_data["propagateTags"] = propagate_tags
+        
+    # Add enableECSManagedTags if provided
+    if enable_ecs_managed_tags is not None:
+        dict_data["enableECSManagedTags"] = enable_ecs_managed_tags
 
     if task_definition_arn != traitlets.Undefined:
         dict_data["overrides"]["taskRoleArn"] = task_role_arn
