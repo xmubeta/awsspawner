@@ -2,9 +2,14 @@
 
 Spawns JupyterHub single user servers in Docker containers running in AWS ECS Tasks (including EC2, Fargate, and Fargate Spot).
 
-## Overview
+## Features
 
-The `awsspawner` is a JupyterHub spawner that allows you to run Jupyter notebooks in AWS ECS (Elastic Container Service) tasks. This enables you to leverage AWS's container orchestration capabilities for your JupyterHub deployment, with support for various launch types including EC2, Fargate, and Fargate Spot.
+- Run JupyterHub single user servers in AWS ECS Tasks
+- Support for EC2, Fargate, and Fargate Spot launch types
+- Configurable resource allocation (CPU, memory)
+- User profiles for different resource configurations
+- Automatic tagging of tasks with Owner tag (using username)
+- Support for custom Docker images
 
 ## Installation
 

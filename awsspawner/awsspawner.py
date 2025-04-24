@@ -207,6 +207,7 @@ class AWSSpawner(Spawner):
                 self.memory,
                 self.memory_reservation,
                 self.args_join,
+                self.user.name,  # Pass the username for tagging
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -368,6 +369,7 @@ def _run_task(
     memory,
     memory_reservation,
     args_join="",
+    username="",
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -401,6 +403,12 @@ def _run_task(
                 "subnets": task_subnets,
             },
         },
+        "tags": [
+            {
+                "key": "Owner",
+                "value": username
+            }
+        ]
     }
 
     if task_definition_arn != traitlets.Undefined:
