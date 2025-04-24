@@ -40,10 +40,10 @@ class AWSSpawner(Spawner):
     task_container_name = Unicode(config=True)
     task_definition_family = Unicode(config=True)
     task_definition_arn = Unicode("", config=True, help="ARN of the task definition to use directly")
-    task_security_groups = List(trait=Unicode, config=True)
-    task_subnets = List(trait=Unicode, config=True)
+    task_security_groups = List(trait=Unicode(), config=True)
+    task_subnets = List(trait=Unicode(), config=True)
     notebook_scheme = Unicode(config=True)
-    notebook_args = List(trait=Unicode, config=True)
+    notebook_args = List(trait=Unicode(), config=True)
     args_join = Unicode(config=True)
     image = Unicode("", config=True)
     task_owner_tag_name = Unicode("Jupyter-User", config=True, help="Name of the tag used to identify the owner of the task")
@@ -412,18 +412,13 @@ def _run_task(
                 "subnets": task_subnets,
             },
         },
-        "tags": [
-            {
-                "key": owner_tag_name,
-                "value": username
-            }
-        ]
+        "tags": [{"key": owner_tag_name, "value": username}],
     }
-    
+
     # Add propagateTags if provided
     if propagate_tags is not None:
         dict_data["propagateTags"] = propagate_tags
-        
+
     # Add enableECSManagedTags if provided
     if enable_ecs_managed_tags is not None:
         dict_data["enableECSManagedTags"] = enable_ecs_managed_tags
