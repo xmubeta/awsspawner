@@ -1,15 +1,17 @@
 # awsspawner
 
-Spawns JupyterHub single user servers in Docker containers running in AWS ECS Tasks (including EC2, Fargate, and Fargate Spot).
+Spawns JupyterHub single user servers in Docker containers running in AWS ECS Tasks (including EC2, Fargate, Fargate Spot, and ECS Anywhere).
 
 ## Features
 
 - Run JupyterHub single user servers in AWS ECS Tasks
-- Support for EC2, Fargate, and Fargate Spot launch types
+- Support for EC2, Fargate, Fargate Spot, and ECS Anywhere launch types
+- Dynamic port allocation for ECS Anywhere to prevent conflicts
 - Configurable resource allocation (CPU, memory)
 - User profiles for different resource configurations
 - Automatic tagging of tasks with configurable owner tag (using username)
 - Support for custom Docker images
+- Placement constraints for ECS Anywhere deployments
 
 ## Installation
 
@@ -50,12 +52,15 @@ c.AWSSpawner.assign_public_ip = True  # Set to False for private subnets
 
 # Launch type configuration
 # Option 1: Use a specific launch type
-c.AWSSpawner.launch_type = 'FARGATE'  # Options: 'EC2', 'FARGATE'
+c.AWSSpawner.launch_type = 'FARGATE'  # Options: 'EC2', 'FARGATE', 'EXTERNAL'
 
 # Option 2: Use Fargate Spot
 c.AWSSpawner.launch_type = 'FARGATE_SPOT'
 
-# Option 3: Use capacity provider strategy
+# Option 3: Use ECS Anywhere
+c.AWSSpawner.launch_type = 'EXTERNAL'
+
+# Option 4: Use capacity provider strategy
 c.AWSSpawner.launch_type = [
     {'capacityProvider': 'FARGATE_SPOT', 'weight': 1, 'base': 1}
 ]
@@ -81,6 +86,14 @@ c.AWSSpawner.task_owner_tag_name = 'Jupyter-User'  # Default value
 # ECS task settings (optional)
 c.AWSSpawner.propagate_tags = 'TASK_DEFINITION'  # Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'
 c.AWSSpawner.enable_ecs_managed_tags = True  # Enable ECS managed tags
+
+# ECS Anywhere specific settings (optional)
+c.AWSSpawner.port_range_start = 8000  # Start of port range for dynamic allocation
+c.AWSSpawner.port_range_end = 9000    # End of port range for dynamic allocation
+c.AWSSpawner.use_dynamic_port = True  # Use dynamic port allocation
+c.AWSSpawner.placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
+]
 ```
 
 ## Authentication
@@ -136,17 +149,140 @@ c.AWSSpawner.profiles = [
             'launch_type': 'EC2',  # Override launch type for GPU instances
         }
     ),
+    # Scenario 1: Environment-based node selection
+    (
+        'Development Environment',
+        'dev',
+        {
+            'cpu': 1024,
+            'memory': 2048,
+            'launch_type': 'EXTERNAL',
+            'use_dynamic_port': True,
+            'placement_constraints': [
+                {'type': 'memberOf', 'expression': 'attribute:environment == development'}
+            ],
+        }
+    ),
+    (
+        'Production Environment', 
+        'prod',
+        {
+            'cpu': 2048,
+            'memory': 4096,
+            'launch_type': 'EXTERNAL',
+            'use_dynamic_port': True,
+            'placement_constraints': [
+                {'type': 'memberOf', 'expression': 'attribute:environment == production'}
+            ],
+        }
+    ),
+    # Scenario 2: Hardware-based node selection
+    (
+        'High Memory Instance',
+        'high-mem',
+        {
+            'cpu': 2048,
+            'memory': 8192,
+            'launch_type': 'EXTERNAL',
+            'use_dynamic_port': True,
+            'placement_constraints': [
+                {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
+            ],
+        }
+    ),
+    (
+        'GPU Anywhere Instance',
+        'gpu-anywhere',
+        {
+            'cpu': 4096,
+            'memory': 8192,
+            'launch_type': 'EXTERNAL', 
+            'use_dynamic_port': True,
+            'placement_constraints': [
+                {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
+            ],
+        }
+    ),
 ]
+```
+
+## ECS Anywhere Support
+
+This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on your own infrastructure while leveraging ECS orchestration.
+
+### Key Features for ECS Anywhere:
+
+- **Dynamic Port Allocation**: Automatically assigns available ports to prevent conflicts when multiple users run on the same node
+- **Node IP Detection**: Automatically detects the IP address of ECS Anywhere nodes
+- **Placement Constraints**: Support for constraining tasks to specific nodes or node attributes
+- **No VPC Configuration Required**: ECS Anywhere tasks don't require VPC network configuration
+
+### Configuration Example:
+
+```python
+# Enable ECS Anywhere
+c.AWSSpawner.launch_type = 'EXTERNAL'
+
+# Configure port range for dynamic allocation
+c.AWSSpawner.port_range_start = 8000
+c.AWSSpawner.port_range_end = 9000
+c.AWSSpawner.use_dynamic_port = True
+
+# Optional: Add placement constraints
+c.AWSSpawner.placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
+]
+```
+
+### Placement Constraints Examples:
+
+Placement constraints allow you to control which nodes your tasks run on based on node attributes:
+
+```python
+# Example 1: Run on specific availability zone
+placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:ecs.availability-zone == us-west-2a'}
+]
+
+# Example 2: Run on nodes with specific instance types
+placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
+]
+
+# Example 3: Run on GPU-enabled nodes (custom attribute)
+placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
+]
+
+# Example 4: Multiple constraints (AND relationship)
+placement_constraints = [
+    {'type': 'memberOf', 'expression': 'attribute:environment == production'},
+    {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
+]
+```
+
+### Adding Custom Attributes to ECS Anywhere Nodes:
+
+When registering ECS Anywhere nodes, you can add custom attributes:
+
+```bash
+./ecs-anywhere-install.sh \
+  --cluster your-cluster \
+  --activation-id activation-id \
+  --activation-code activation-code \
+  --region us-west-2 \
+  --attributes environment=production,gpu-enabled=true,memory-optimized=false
 ```
 
 ## Prerequisites
 
 Before using this spawner, ensure you have:
 
-1. An AWS ECS cluster set up
+1. An AWS ECS cluster set up (including ECS Anywhere nodes if using EXTERNAL launch type)
 2. Appropriate task definitions created for your Jupyter notebooks
 3. Proper IAM permissions for the JupyterHub server to interact with ECS
-4. Network configuration (VPC, subnets, security groups) that allows communication between JupyterHub and the ECS tasks
+4. Network configuration (VPC, subnets, security groups) that allows communication between JupyterHub and the ECS tasks (not required for ECS Anywhere)
+5. For ECS Anywhere: Registered external instances with the ECS cluster
 
 ## Development
 

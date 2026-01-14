@@ -49,6 +49,13 @@ class AWSSpawner(Spawner):
     task_owner_tag_name = Unicode("Jupyter-User", config=True, help="Name of the tag used to identify the owner of the task")
     propagate_tags = Unicode("TASK_DEFINITION", config=True, help="How to propagate tags. Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'")
     enable_ecs_managed_tags = Bool(True, config=True, help="Whether to enable Amazon ECS managed tags for the task")
+    
+    # ECS Anywhere specific configurations
+    port_range_start = Int(default_value=8000, config=True, help="Start of port range for ECS Anywhere dynamic allocation")
+    port_range_end = Int(default_value=9000, config=True, help="End of port range for ECS Anywhere dynamic allocation")
+    use_dynamic_port = Bool(default_value=True, config=True, help="Use dynamic port allocation for ECS Anywhere")
+    external_instance_id = Unicode(config=True, help="ECS Anywhere instance ID for placement constraints")
+    placement_constraints = List(config=True, help="Placement constraints for ECS Anywhere tasks")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -58,6 +65,7 @@ class AWSSpawner(Spawner):
         return self.authentication_class(parent=self)
 
     task_arn = Unicode("")
+    allocated_port = Int(default_value=0)  # Store allocated port for ECS Anywhere
 
     # options form
     profiles = List(
@@ -119,6 +127,86 @@ class AWSSpawner(Spawner):
                 return p[2]
         return None
 
+    def _is_ecs_anywhere(self):
+        """Check if using ECS Anywhere launch type"""
+        return (self.launch_type == "EXTERNAL" or 
+                (isinstance(self.launch_type, list) and 
+                 any(cp.get("capacityProvider") == "EXTERNAL" for cp in self.launch_type)))
+    
+    async def _allocate_port_for_node(self):
+        """Allocate available port for ECS Anywhere node"""
+        if not self.use_dynamic_port:
+            return self._deterministic_port_allocation()
+            
+        session = self.authentication.get_session(self.aws_region)
+        
+        # Get used ports on the same node
+        used_ports = await self._get_used_ports_on_node(session)
+        
+        # Find available port in range
+        for port in range(self.port_range_start, self.port_range_end + 1):
+            if port not in used_ports:
+                self.log.info(f"Allocated port {port} for user {self.user.name}")
+                self.allocated_port = port
+                return port
+        
+        raise Exception(f"No available ports in range {self.port_range_start}-{self.port_range_end}")
+    
+    def _deterministic_port_allocation(self):
+        """Generate deterministic port based on username"""
+        import hashlib
+        
+        # Generate hash from username
+        user_hash = hashlib.md5(self.user.name.encode()).hexdigest()
+        port_offset = int(user_hash[:4], 16) % (self.port_range_end - self.port_range_start)
+        port = self.port_range_start + port_offset
+        
+        self.log.info(f"Assigned deterministic port {port} for user {self.user.name}")
+        self.allocated_port = port
+        return port
+    
+    async def _get_used_ports_on_node(self, session):
+        """Get ports already in use on ECS Anywhere nodes"""
+        client = session.client("ecs")
+        used_ports = set()
+        
+        try:
+            # List all tasks in the cluster
+            response = client.list_tasks(cluster=self.task_cluster_name)
+            
+            if response["taskArns"]:
+                # Describe all tasks
+                tasks_response = client.describe_tasks(
+                    cluster=self.task_cluster_name,
+                    tasks=response["taskArns"]
+                )
+                
+                for task in tasks_response["tasks"]:
+                    # Only check tasks running on ECS Anywhere nodes
+                    if (task.get("launchType") == "EXTERNAL" and 
+                        task.get("lastStatus") in ["RUNNING", "PENDING"]):
+                        
+                        # Extract port information from task
+                        ports = self._extract_ports_from_task(task)
+                        used_ports.update(ports)
+                        
+        except Exception as e:
+            self.log.error(f"Failed to get used ports: {e}")
+        
+        return used_ports
+    
+    def _extract_ports_from_task(self, task):
+        """Extract used ports from task definition"""
+        ports = set()
+        
+        # Extract port mappings from containers
+        for container in task.get("containers", []):
+            for port_mapping in container.get("networkBindings", []):
+                if port_mapping.get("hostPort"):
+                    ports.add(port_mapping["hostPort"])
+        
+        return ports
+
     # We mostly are able to call the AWS API to determine status. However, when we yield the
     # event loop to create the task, if there is a poll before the creation is complete,
     # we must behave as though we are running/starting, but we have no IDs to use with which
@@ -128,20 +216,17 @@ class AWSSpawner(Spawner):
     progress_buffer = None
 
     def load_state(self, state):
-        """Misleading name: this "loads" the state onto self, to be used by other methods"""
-
+        """Load state from database, including allocated port for ECS Anywhere"""
         super().load_state(state)
-
         # Called when first created: we might have no state from a previous invocation
         self.task_arn = state.get("task_arn", "")
+        self.allocated_port = state.get("allocated_port", 0)
 
     def get_state(self):
-        """Misleading name: the return value of get_state is saved to the database in order
-        to be able to restore after the hub went down"""
-
+        """Save state to database, including allocated port for ECS Anywhere"""
         state = super().get_state()
         state["task_arn"] = self.task_arn
-
+        state["allocated_port"] = getattr(self, 'allocated_port', 0)
         return state
 
     async def poll(self):
@@ -176,7 +261,15 @@ class AWSSpawner(Spawner):
                 else:
                     setattr(self, key, value)
 
-        task_port = self.port
+        # Handle port allocation for ECS Anywhere
+        if self._is_ecs_anywhere():
+            if self.allocated_port == 0:  # No port allocated yet
+                task_port = await self._allocate_port_for_node()
+            else:
+                task_port = self.allocated_port  # Use previously allocated port
+        else:
+            task_port = self.port  # Use default port for Fargate
+            
         session = self.authentication.get_session(self.aws_region)
 
         if self.task_definition_arn:
@@ -214,6 +307,7 @@ class AWSSpawner(Spawner):
                 self.task_owner_tag_name,  # Pass the tag name
                 self.propagate_tags,  # Pass propagate_tags parameter
                 self.enable_ecs_managed_tags,  # Pass enable_ecs_managed_tags parameter
+                self.placement_constraints,  # Pass placement constraints for ECS Anywhere
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -271,6 +365,7 @@ class AWSSpawner(Spawner):
         super().clear_state()
         self.log.debug("Clearing state: (%s)", self.task_arn)
         self.task_arn = ""
+        self.allocated_port = 0  # Reset allocated port
         self.progress_buffer = AsyncIteratorBuffer()
 
     async def progress(self):
@@ -287,15 +382,80 @@ def _ensure_stopped_task(_, session, task_cluster_name, task_arn):
 
 
 def _get_task_ip(logger, session, task_cluster_name, task_arn):
+    """Get IP address for task, supporting both Fargate and ECS Anywhere"""
     described_task = _describe_task(logger, session, task_cluster_name, task_arn)
+    
+    if not described_task:
+        return ""
+    
+    # Check if this is ECS Anywhere (EXTERNAL launch type)
+    launch_type = described_task.get("launchType", "")
+    
+    if launch_type == "EXTERNAL":
+        # For ECS Anywhere, get IP from container instance
+        container_instance_arn = described_task.get("containerInstanceArn")
+        if container_instance_arn:
+            return _get_container_instance_ip(logger, session, task_cluster_name, container_instance_arn)
+    else:
+        # Original Fargate logic: get IP from ENI attachments
+        ip_address_attachements = (
+            [attachment["value"] for attachment in described_task["attachments"][0]["details"] 
+             if attachment["name"] == "privateIPv4Address"]
+            if described_task and "attachments" in described_task and described_task["attachments"]
+            else []
+        )
+        if ip_address_attachements:
+            return ip_address_attachements[0]
+    
+    return ""
 
-    ip_address_attachements = (
-        [attachment["value"] for attachment in described_task["attachments"][0]["details"] if attachment["name"] == "privateIPv4Address"]
-        if described_task and "attachments" in described_task and described_task["attachments"]
-        else []
-    )
-    ip_address = ip_address_attachements[0] if ip_address_attachements else ""
-    return ip_address
+
+def _get_container_instance_ip(logger, session, task_cluster_name, container_instance_arn):
+    """Get IP address of ECS Anywhere container instance"""
+    client = session.client("ecs")
+    
+    try:
+        # Describe container instance
+        response = client.describe_container_instances(
+            cluster=task_cluster_name,
+            containerInstances=[container_instance_arn]
+        )
+        
+        if response["containerInstances"]:
+            container_instance = response["containerInstances"][0]
+            
+            # Method 1: Get IP from attributes
+            for attribute in container_instance.get("attributes", []):
+                if attribute["name"] == "ecs.instance-ipv4-address":
+                    return attribute["value"]
+            
+            # Method 2: If EC2 instance ID exists, get IP via EC2 API
+            ec2_instance_id = container_instance.get("ec2InstanceId")
+            if ec2_instance_id:
+                return _get_ec2_instance_ip(logger, session, ec2_instance_id)
+                
+    except Exception as e:
+        logger.error(f"Failed to get container instance IP: {e}")
+    
+    return ""
+
+
+def _get_ec2_instance_ip(logger, session, instance_id):
+    """Get IP address via EC2 instance ID"""
+    try:
+        ec2_client = session.client("ec2")
+        response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        
+        if response["Reservations"]:
+            instance = response["Reservations"][0]["Instances"][0]
+            # Return private IP first, fallback to public IP
+            return (instance.get("PrivateIpAddress") or 
+                   instance.get("PublicIpAddress") or "")
+                   
+    except Exception as e:
+        logger.error(f"Failed to get EC2 instance IP: {e}")
+    
+    return ""
 
 
 def _find_or_create_task_definition(logger, session, task_definition_family, task_container_name, image):
@@ -379,6 +539,7 @@ def _run_task(
     owner_tag_name="",
     propagate_tags=None,
     enable_ecs_managed_tags=None,
+    placement_constraints=None,
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -405,13 +566,6 @@ def _run_task(
             ],
         },
         "count": 1,
-        "networkConfiguration": {
-            "awsvpcConfiguration": {
-                "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
-                "securityGroups": task_security_groups,
-                "subnets": task_subnets,
-            },
-        },
         "tags": [{"key": owner_tag_name, "value": username}],
     }
 
@@ -422,6 +576,10 @@ def _run_task(
     # Add enableECSManagedTags if provided
     if enable_ecs_managed_tags is not None:
         dict_data["enableECSManagedTags"] = enable_ecs_managed_tags
+
+    # Add placement constraints if provided
+    if placement_constraints:
+        dict_data["placementConstraints"] = placement_constraints
 
     if task_definition_arn != traitlets.Undefined:
         dict_data["overrides"]["taskRoleArn"] = task_role_arn
@@ -435,13 +593,35 @@ def _run_task(
     if memory_reservation >= 0:
         dict_data["overrides"]["memoryReservation"] = memory_reservation
 
+    # Handle launch type configuration
     if launch_type != traitlets.Undefined:
         if isinstance(launch_type, list):
             dict_data["capacityProviderStrategy"] = launch_type
         elif launch_type == "FARGATE_SPOT":
             dict_data["capacityProviderStrategy"] = [{"base": 1, "capacityProvider": "FARGATE_SPOT", "weight": 1}]
+        elif launch_type == "EXTERNAL":
+            dict_data["launchType"] = "EXTERNAL"
+            # For ECS Anywhere, network configuration is not needed
         else:
             dict_data["launchType"] = launch_type
+            # Add network configuration for Fargate/EC2
+            dict_data["networkConfiguration"] = {
+                "awsvpcConfiguration": {
+                    "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
+                    "securityGroups": task_security_groups,
+                    "subnets": task_subnets,
+                },
+            }
+    else:
+        # Default network configuration for non-EXTERNAL launch types
+        dict_data["networkConfiguration"] = {
+            "awsvpcConfiguration": {
+                "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
+                "securityGroups": task_security_groups,
+                "subnets": task_subnets,
+            },
+        }
+        
     return client.run_task(**dict_data)
 
 
