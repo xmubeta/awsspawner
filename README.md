@@ -213,9 +213,14 @@ This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on 
 ### Key Features for ECS Anywhere:
 
 - **Dynamic Port Allocation**: Automatically assigns available ports to prevent conflicts when multiple users run on the same node
-- **Node IP Detection**: Automatically detects the IP address of ECS Anywhere nodes
+- **Smart Node IP Detection**: Automatically detects IP addresses using multiple methods:
+  - ECS container instance attributes
+  - SSM (Systems Manager) managed instance information
+  - SSM inventory data for network interfaces
+  - Fallback verification using SSM commands
 - **Placement Constraints**: Support for constraining tasks to specific nodes or node attributes
 - **No VPC Configuration Required**: ECS Anywhere tasks don't require VPC network configuration
+- **Support for Non-EC2 Nodes**: Works with on-premises servers, edge devices, and other cloud providers
 
 ### Configuration Example:
 
@@ -274,15 +279,43 @@ When registering ECS Anywhere nodes, you can add custom attributes:
   --attributes environment=production,gpu-enabled=true,memory-optimized=false
 ```
 
+### Required IAM Permissions for ECS Anywhere:
+
+The JupyterHub service needs additional IAM permissions when using ECS Anywhere:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecs:*",
+                "ec2:DescribeInstances",
+                "ssm:DescribeInstanceInformation",
+                "ssm:GetInventoryEntries",
+                "ssm:SendCommand",
+                "ssm:GetCommandInvocation",
+                "ssm:ListCommandInvocations"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
 ## Prerequisites
 
 Before using this spawner, ensure you have:
 
 1. An AWS ECS cluster set up (including ECS Anywhere nodes if using EXTERNAL launch type)
 2. Appropriate task definitions created for your Jupyter notebooks
-3. Proper IAM permissions for the JupyterHub server to interact with ECS
+3. Proper IAM permissions for the JupyterHub server to interact with ECS, EC2, and SSM
 4. Network configuration (VPC, subnets, security groups) that allows communication between JupyterHub and the ECS tasks (not required for ECS Anywhere)
-5. For ECS Anywhere: Registered external instances with the ECS cluster
+5. For ECS Anywhere: 
+   - Registered external instances with the ECS cluster
+   - SSM agent installed and running on ECS Anywhere nodes
+   - Proper IAM permissions for SSM operations (ssm:DescribeInstanceInformation, ssm:GetInventoryEntries, ssm:SendCommand, ssm:GetCommandInvocation)
 
 ## Development
 

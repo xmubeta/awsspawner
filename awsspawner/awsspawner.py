@@ -424,20 +424,182 @@ def _get_container_instance_ip(logger, session, task_cluster_name, container_ins
         if response["containerInstances"]:
             container_instance = response["containerInstances"][0]
             
-            # Method 1: Get IP from attributes
+            # Method 1: Get IP from ECS attributes
             for attribute in container_instance.get("attributes", []):
                 if attribute["name"] == "ecs.instance-ipv4-address":
                     return attribute["value"]
             
-            # Method 2: If EC2 instance ID exists, get IP via EC2 API
+            # Method 2: For ECS Anywhere, try to get IP via SSM
+            # ECS Anywhere nodes register with SSM, not EC2
             ec2_instance_id = container_instance.get("ec2InstanceId")
             if ec2_instance_id:
-                return _get_ec2_instance_ip(logger, session, ec2_instance_id)
+                # Check if this is actually an EC2 instance or ECS Anywhere node
+                if ec2_instance_id.startswith("i-"):
+                    # This is a real EC2 instance
+                    return _get_ec2_instance_ip(logger, session, ec2_instance_id)
+                else:
+                    # This is likely an ECS Anywhere node with SSM managed instance ID
+                    return _get_ssm_managed_instance_ip(logger, session, ec2_instance_id)
+            
+            # Method 3: Try to get from SSM using container instance ARN
+            return _get_ip_from_ssm_by_container_instance(logger, session, container_instance_arn)
                 
     except Exception as e:
         logger.error(f"Failed to get container instance IP: {e}")
     
     return ""
+
+
+def _get_ssm_managed_instance_ip(logger, session, managed_instance_id):
+    """Get IP address from SSM managed instance (ECS Anywhere)"""
+    try:
+        ssm_client = session.client("ssm")
+        
+        # Get instance information from SSM
+        response = ssm_client.describe_instance_information(
+            InstanceInformationFilterList=[
+                {
+                    'key': 'InstanceIds',
+                    'valueSet': [managed_instance_id]
+                }
+            ]
+        )
+        
+        if response["InstanceInformationList"]:
+            instance_info = response["InstanceInformationList"][0]
+            
+            # Try to get IP from instance information
+            ip_address = instance_info.get("IPAddress")
+            if ip_address:
+                logger.info(f"Found IP {ip_address} for SSM managed instance {managed_instance_id}")
+                return ip_address
+            
+            # Alternative: Get IP from SSM inventory
+            return _get_ip_from_ssm_inventory(logger, session, managed_instance_id)
+                   
+    except Exception as e:
+        logger.error(f"Failed to get SSM managed instance IP: {e}")
+    
+    return ""
+
+
+def _get_ip_from_ssm_inventory(logger, session, managed_instance_id):
+    """Get IP address from SSM inventory data"""
+    try:
+        ssm_client = session.client("ssm")
+        
+        # Get network inventory from SSM
+        response = ssm_client.get_inventory_entries(
+            InstanceId=managed_instance_id,
+            TypeName='AWS:Network'
+        )
+        
+        if response["Entries"]:
+            for entry in response["Entries"]:
+                # Look for primary network interface
+                if entry.get("Name") and "eth0" in entry.get("Name", "").lower():
+                    ip_address = entry.get("IPV4")
+                    if ip_address:
+                        logger.info(f"Found IP {ip_address} from SSM inventory for {managed_instance_id}")
+                        return ip_address
+                        
+            # Fallback: use first available IP
+            for entry in response["Entries"]:
+                ip_address = entry.get("IPV4")
+                if ip_address and not ip_address.startswith("127."):
+                    logger.info(f"Found fallback IP {ip_address} from SSM inventory for {managed_instance_id}")
+                    return ip_address
+                   
+    except Exception as e:
+        logger.error(f"Failed to get IP from SSM inventory: {e}")
+    
+    return ""
+
+
+def _get_ip_from_ssm_by_container_instance(logger, session, container_instance_arn):
+    """Get IP by finding SSM managed instance associated with container instance"""
+    try:
+        ssm_client = session.client("ssm")
+        
+        # Extract container instance ID from ARN
+        container_instance_id = container_instance_arn.split("/")[-1]
+        
+        # Search for SSM managed instances with ECS container instance tag
+        response = ssm_client.describe_instance_information(
+            InstanceInformationFilterList=[
+                {
+                    'key': 'tag:ecs:container-instance-id',
+                    'valueSet': [container_instance_id]
+                }
+            ]
+        )
+        
+        if response["InstanceInformationList"]:
+            instance_info = response["InstanceInformationList"][0]
+            ip_address = instance_info.get("IPAddress")
+            if ip_address:
+                logger.info(f"Found IP {ip_address} via SSM tag search for container instance {container_instance_id}")
+                return ip_address
+                
+        # Alternative: Search by ECS cluster association
+        # This is a fallback method when direct tagging is not available
+        response = ssm_client.describe_instance_information()
+        
+        for instance in response["InstanceInformationList"]:
+            # Check if this instance might be associated with our ECS cluster
+            # This is a heuristic approach and may need adjustment based on your setup
+            if instance.get("PlatformType") == "Linux":
+                managed_instance_id = instance["InstanceId"]
+                # Try to verify this is our ECS Anywhere node by checking running processes
+                if _verify_ecs_anywhere_node(logger, session, managed_instance_id, container_instance_id):
+                    ip_address = instance.get("IPAddress")
+                    if ip_address:
+                        logger.info(f"Found IP {ip_address} via SSM verification for {managed_instance_id}")
+                        return ip_address
+                   
+    except Exception as e:
+        logger.error(f"Failed to get IP from SSM by container instance: {e}")
+    
+    return ""
+
+
+def _verify_ecs_anywhere_node(logger, session, managed_instance_id, container_instance_id):
+    """Verify if SSM managed instance is the ECS Anywhere node we're looking for"""
+    try:
+        ssm_client = session.client("ssm")
+        
+        # Run a command to check if this node has our container instance
+        response = ssm_client.send_command(
+            InstanceIds=[managed_instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={
+                'commands': [
+                    f'docker ps --filter "label=com.amazonaws.ecs.container-instance-id={container_instance_id}" --quiet'
+                ]
+            },
+            TimeoutSeconds=30
+        )
+        
+        command_id = response["Command"]["CommandId"]
+        
+        # Wait a moment for command to execute
+        import time
+        time.sleep(2)
+        
+        # Get command result
+        result = ssm_client.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=managed_instance_id
+        )
+        
+        # If command succeeded and returned container IDs, this is our node
+        if result["Status"] == "Success" and result.get("StandardOutputContent", "").strip():
+            return True
+            
+    except Exception as e:
+        logger.debug(f"ECS Anywhere node verification failed for {managed_instance_id}: {e}")
+    
+    return False
 
 
 def _get_ec2_instance_ip(logger, session, instance_id):
