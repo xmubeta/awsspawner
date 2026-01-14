@@ -56,7 +56,6 @@ class AWSSpawner(Spawner):
     use_dynamic_port = Bool(default_value=True, config=True, help="Use dynamic port allocation for ECS Anywhere")
     external_instance_id = Unicode(config=True, help="ECS Anywhere instance ID for placement constraints")
     placement_constraints = List(config=True, help="Placement constraints for ECS Anywhere tasks")
-    network_mode = Unicode(default_value="bridge", config=True, help="Network mode for ECS Anywhere and EC2 tasks (bridge, host, none, awsvpc). Fargate always uses awsvpc.")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -264,10 +263,9 @@ class AWSSpawner(Spawner):
 
         # Handle port allocation for ECS Anywhere
         if self._is_ecs_anywhere():
-            if self.allocated_port == 0:  # No port allocated yet
-                task_port = await self._allocate_port_for_node()
-            else:
-                task_port = self.allocated_port  # Use previously allocated port
+            # For ECS Anywhere, we'll get the actual port from run_task response
+            # Use a placeholder port for now
+            task_port = 8888  # This will be updated after task starts
         else:
             task_port = self.port  # Use default port for Fargate
             
@@ -309,7 +307,6 @@ class AWSSpawner(Spawner):
                 self.propagate_tags,  # Pass propagate_tags parameter
                 self.enable_ecs_managed_tags,  # Pass enable_ecs_managed_tags parameter
                 self.placement_constraints,  # Pass placement constraints for ECS Anywhere
-                self.network_mode,  # Pass network mode for ECS Anywhere
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -321,12 +318,22 @@ class AWSSpawner(Spawner):
         max_polls = self.start_timeout / 2
         num_polls = 0
         task_ip = ""
+        actual_task_port = task_port  # Default to original port
+        
         while task_ip == "":
             num_polls += 1
             if num_polls >= max_polls:
                 raise Exception("Task {} took too long to find IP address".format(self.task_arn))
 
             task_ip = _get_task_ip(self.log, session, self.task_cluster_name, task_arn)
+            
+            # For ECS Anywhere, also get the actual port from task
+            if self._is_ecs_anywhere() and task_ip:
+                port_from_task = _get_task_port(self.log, session, self.task_cluster_name, task_arn, self.task_container_name)
+                if port_from_task:
+                    actual_task_port = port_from_task
+                    self.allocated_port = port_from_task  # Store for state persistence
+                    
             await gen.sleep(1)
             self.progress_buffer.write({"progress": 1 + num_polls / max_polls * 10, "message": "Getting network address.."})
 
@@ -352,7 +359,7 @@ class AWSSpawner(Spawner):
 
         self.progress_buffer.close()
 
-        return f"{self.notebook_scheme}://{task_ip}:{task_port}"
+        return f"{self.notebook_scheme}://{task_ip}:{actual_task_port}"
 
     async def stop(self, now=False):
         if self.task_arn == "":
@@ -383,7 +390,32 @@ def _ensure_stopped_task(_, session, task_cluster_name, task_arn):
     client.stop_task(cluster=task_cluster_name, task=task_arn)
 
 
-def _get_task_ip(logger, session, task_cluster_name, task_arn):
+def _get_task_port(logger, session, task_cluster_name, task_arn, container_name):
+    """Get the actual port used by the task from run_task response"""
+    described_task = _describe_task(logger, session, task_cluster_name, task_arn)
+    
+    if not described_task:
+        return None
+    
+    # Look for port mappings in containers
+    for container in described_task.get("containers", []):
+        if container.get("name") == container_name:
+            # Get port mappings from network bindings
+            for port_binding in container.get("networkBindings", []):
+                host_port = port_binding.get("hostPort")
+                if host_port:
+                    logger.info(f"Found host port {host_port} for container {container_name}")
+                    return host_port
+            
+            # If no network bindings, check if using host network mode
+            # In host mode, container port = host port
+            for port_mapping in container.get("portMappings", []):
+                container_port = port_mapping.get("containerPort")
+                if container_port:
+                    logger.info(f"Using container port {container_port} (host network mode)")
+                    return container_port
+    
+    return None
     """Get IP address for task, supporting both Fargate and ECS Anywhere"""
     described_task = _describe_task(logger, session, task_cluster_name, task_arn)
     
@@ -640,18 +672,15 @@ def _find_or_create_task_definition(logger, session, task_definition_family, tas
                 create_definition = definition["taskDefinition"]
 
     if create_definition:
-        del (
-            create_definition["taskDefinitionArn"],
-            create_definition["revision"],
-            create_definition["status"],
-            create_definition["requiresAttributes"],
-            create_definition["compatibilities"],
-            create_definition["registeredAt"],
-            create_definition["registeredBy"],
-        )
-        # create
+        # Remove read-only fields
+        for field in ["taskDefinitionArn", "revision", "status", "requiresAttributes", 
+                     "compatibilities", "registeredAt", "registeredBy"]:
+            create_definition.pop(field, None)
+        
+        # Register new task definition
         res = client.register_task_definition(**create_definition)
         arn = res["taskDefinition"]["taskDefinitionArn"]
+        logger.info(f"Created new task definition: {arn}")
 
         return {"found": False, "arn": arn}
 
@@ -704,7 +733,6 @@ def _run_task(
     propagate_tags=None,
     enable_ecs_managed_tags=None,
     placement_constraints=None,
-    network_mode="bridge",
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -765,7 +793,8 @@ def _run_task(
             # For capacity provider strategy, check if it includes EXTERNAL
             has_external = any(cp.get("capacityProvider") == "EXTERNAL" for cp in launch_type)
             if has_external:
-                dict_data["overrides"]["networkMode"] = network_mode
+                # For ECS Anywhere in capacity provider strategy, networkMode should be in task definition
+                pass
             else:
                 # Use awsvpc for Fargate/EC2 capacity providers
                 dict_data["networkConfiguration"] = {
@@ -787,8 +816,7 @@ def _run_task(
             }
         elif launch_type == "EXTERNAL":
             dict_data["launchType"] = "EXTERNAL"
-            # For ECS Anywhere, add network mode override
-            dict_data["overrides"]["networkMode"] = network_mode
+            # For ECS Anywhere, networkMode should be set in task definition, not overrides
             # ECS Anywhere doesn't use awsvpc network configuration
         elif launch_type == "FARGATE":
             dict_data["launchType"] = "FARGATE"
@@ -801,20 +829,8 @@ def _run_task(
                 },
             }
         else:
-            # EC2 launch type
+            # EC2 launch type - network mode is defined in task definition
             dict_data["launchType"] = launch_type
-            # EC2 can use different network modes, but awsvpc is most common
-            # Only override network mode if it's not awsvpc
-            if network_mode != "awsvpc":
-                dict_data["overrides"]["networkMode"] = network_mode
-            else:
-                dict_data["networkConfiguration"] = {
-                    "awsvpcConfiguration": {
-                        "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
-                        "securityGroups": task_security_groups,
-                        "subnets": task_subnets,
-                    },
-                }
     else:
         # Default network configuration for non-EXTERNAL launch types
         dict_data["networkConfiguration"] = {

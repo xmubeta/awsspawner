@@ -91,7 +91,6 @@ c.AWSSpawner.enable_ecs_managed_tags = True  # Enable ECS managed tags
 c.AWSSpawner.port_range_start = 8000  # Start of port range for dynamic allocation
 c.AWSSpawner.port_range_end = 9000    # End of port range for dynamic allocation
 c.AWSSpawner.use_dynamic_port = True  # Use dynamic port allocation
-c.AWSSpawner.network_mode = 'bridge'  # Network mode for ECS Anywhere/EC2 (Fargate always uses awsvpc)
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
 ]
@@ -159,7 +158,6 @@ c.AWSSpawner.profiles = [
             'memory': 2048,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == development'}
             ],
@@ -173,7 +171,6 @@ c.AWSSpawner.profiles = [
             'memory': 4096,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == production'}
             ],
@@ -188,7 +185,6 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
             ],
@@ -202,7 +198,6 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL', 
             'use_dynamic_port': True,
-            'network_mode': 'host',  # Use host networking for GPU access
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
             ],
@@ -217,7 +212,7 @@ This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on 
 
 ### Key Features for ECS Anywhere:
 
-- **Dynamic Port Allocation**: Automatically assigns available ports to prevent conflicts when multiple users run on the same node
+- **Automatic Port Detection**: Automatically detects actual ports used by tasks from ECS task network bindings
 - **Smart Node IP Detection**: Automatically detects IP addresses using multiple methods:
   - ECS container instance attributes
   - SSM (Systems Manager) managed instance information
@@ -226,6 +221,7 @@ This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on 
 - **Placement Constraints**: Support for constraining tasks to specific nodes or node attributes
 - **No VPC Configuration Required**: ECS Anywhere tasks don't require VPC network configuration
 - **Support for Non-EC2 Nodes**: Works with on-premises servers, edge devices, and other cloud providers
+- **Network Mode Flexibility**: Works with any network mode defined in your task definition (bridge, host, awsvpc, none)
 
 ### Configuration Example:
 
@@ -233,13 +229,10 @@ This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on 
 # Enable ECS Anywhere
 c.AWSSpawner.launch_type = 'EXTERNAL'
 
-# Configure port range for dynamic allocation
+# Configure port range for dynamic allocation (optional)
 c.AWSSpawner.port_range_start = 8000
 c.AWSSpawner.port_range_end = 9000
 c.AWSSpawner.use_dynamic_port = True
-
-# Configure network mode (only affects ECS Anywhere and EC2)
-c.AWSSpawner.network_mode = 'bridge'  # Options: 'bridge', 'host', 'none', 'awsvpc'
 
 # Optional: Add placement constraints
 c.AWSSpawner.placement_constraints = [
@@ -247,23 +240,13 @@ c.AWSSpawner.placement_constraints = [
 ]
 ```
 
-### Network Mode Options:
+### Port Management for ECS Anywhere:
 
-**For ECS Anywhere and EC2:**
-- **bridge** (default): Container uses Docker's default bridge network
-- **host**: Container shares the host's network stack (no port mapping needed)
-- **none**: Container has no network access
-- **awsvpc**: Container gets its own ENI (requires VPC configuration)
+The spawner automatically detects the actual ports used by ECS Anywhere tasks from the task's network bindings. This works with any network mode defined in your task definition:
 
-**For Fargate:**
-- Always uses **awsvpc** network mode (cannot be changed)
-- Requires VPC configuration (subnets, security groups)
-
-### Important Notes:
-
-- **Fargate Compatibility**: The `network_mode` parameter only affects ECS Anywhere and EC2 launch types. Fargate tasks always use `awsvpc` network mode regardless of this setting.
-- **Port Allocation**: Dynamic port allocation is only relevant for `bridge` and `host` network modes. With `awsvpc` mode, each task gets its own network interface.
-- **Security Groups**: Only required when using `awsvpc` network mode (Fargate and some EC2 configurations).
+- **Bridge mode**: Uses port mapping, spawner gets the host port from `networkBindings`
+- **Host mode**: Container uses host network directly, spawner gets port from container configuration
+- **Custom port ranges**: Configure `port_range_start` and `port_range_end` for reference (actual ports determined by ECS)
 
 ### Placement Constraints Examples:
 
@@ -327,6 +310,49 @@ The JupyterHub service needs additional IAM permissions when using ECS Anywhere:
             "Resource": "*"
         }
     ]
+}
+```
+
+## Task Definition Management
+
+The spawner automatically manages ECS task definitions based on your configuration:
+
+- **Automatic Discovery**: Uses existing task definitions that match your family and container name
+- **Image Updates**: When you change the Docker image, new task definitions are created automatically
+- **Network Mode**: Network mode should be pre-configured in your task definition (bridge, host, awsvpc, none)
+- **Launch Type Compatibility**: Ensure your task definition has the correct `requiresCompatibilities` for your launch type
+
+### Task Definition Requirements:
+
+```python
+# Example task definition for ECS Anywhere with bridge networking:
+{
+    "family": "jupyter-notebook",
+    "networkMode": "bridge",
+    "requiresCompatibilities": ["EXTERNAL"],
+    "containerDefinitions": [
+        {
+            "name": "notebook",
+            "image": "jupyter/minimal-notebook:latest",
+            "portMappings": [
+                {
+                    "containerPort": 8888,
+                    "protocol": "tcp"
+                }
+            ],
+            # ... other container settings
+        }
+    ]
+}
+
+# Example task definition for Fargate:
+{
+    "family": "jupyter-notebook",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "256",
+    "memory": "512",
+    "containerDefinitions": [...]
 }
 ```
 
