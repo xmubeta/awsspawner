@@ -91,6 +91,7 @@ c.AWSSpawner.enable_ecs_managed_tags = True  # Enable ECS managed tags
 c.AWSSpawner.port_range_start = 8000  # Start of port range for dynamic allocation
 c.AWSSpawner.port_range_end = 9000    # End of port range for dynamic allocation
 c.AWSSpawner.use_dynamic_port = True  # Use dynamic port allocation
+c.AWSSpawner.network_mode = 'bridge'  # Network mode for ECS Anywhere/EC2 (Fargate always uses awsvpc)
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
 ]
@@ -158,6 +159,7 @@ c.AWSSpawner.profiles = [
             'memory': 2048,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == development'}
             ],
@@ -171,6 +173,7 @@ c.AWSSpawner.profiles = [
             'memory': 4096,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == production'}
             ],
@@ -185,6 +188,7 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'network_mode': 'bridge',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
             ],
@@ -198,6 +202,7 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL', 
             'use_dynamic_port': True,
+            'network_mode': 'host',  # Use host networking for GPU access
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
             ],
@@ -233,11 +238,32 @@ c.AWSSpawner.port_range_start = 8000
 c.AWSSpawner.port_range_end = 9000
 c.AWSSpawner.use_dynamic_port = True
 
+# Configure network mode (only affects ECS Anywhere and EC2)
+c.AWSSpawner.network_mode = 'bridge'  # Options: 'bridge', 'host', 'none', 'awsvpc'
+
 # Optional: Add placement constraints
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
 ]
 ```
+
+### Network Mode Options:
+
+**For ECS Anywhere and EC2:**
+- **bridge** (default): Container uses Docker's default bridge network
+- **host**: Container shares the host's network stack (no port mapping needed)
+- **none**: Container has no network access
+- **awsvpc**: Container gets its own ENI (requires VPC configuration)
+
+**For Fargate:**
+- Always uses **awsvpc** network mode (cannot be changed)
+- Requires VPC configuration (subnets, security groups)
+
+### Important Notes:
+
+- **Fargate Compatibility**: The `network_mode` parameter only affects ECS Anywhere and EC2 launch types. Fargate tasks always use `awsvpc` network mode regardless of this setting.
+- **Port Allocation**: Dynamic port allocation is only relevant for `bridge` and `host` network modes. With `awsvpc` mode, each task gets its own network interface.
+- **Security Groups**: Only required when using `awsvpc` network mode (Fargate and some EC2 configurations).
 
 ### Placement Constraints Examples:
 

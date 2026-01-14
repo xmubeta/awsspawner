@@ -56,6 +56,7 @@ class AWSSpawner(Spawner):
     use_dynamic_port = Bool(default_value=True, config=True, help="Use dynamic port allocation for ECS Anywhere")
     external_instance_id = Unicode(config=True, help="ECS Anywhere instance ID for placement constraints")
     placement_constraints = List(config=True, help="Placement constraints for ECS Anywhere tasks")
+    network_mode = Unicode(default_value="bridge", config=True, help="Network mode for ECS Anywhere and EC2 tasks (bridge, host, none, awsvpc). Fargate always uses awsvpc.")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -308,6 +309,7 @@ class AWSSpawner(Spawner):
                 self.propagate_tags,  # Pass propagate_tags parameter
                 self.enable_ecs_managed_tags,  # Pass enable_ecs_managed_tags parameter
                 self.placement_constraints,  # Pass placement constraints for ECS Anywhere
+                self.network_mode,  # Pass network mode for ECS Anywhere
             )
             task_arn = run_response["tasks"][0]["taskArn"]
             self.progress_buffer.write({"progress": 1})
@@ -702,6 +704,7 @@ def _run_task(
     propagate_tags=None,
     enable_ecs_managed_tags=None,
     placement_constraints=None,
+    network_mode="bridge",
 ):
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
@@ -759,14 +762,22 @@ def _run_task(
     if launch_type != traitlets.Undefined:
         if isinstance(launch_type, list):
             dict_data["capacityProviderStrategy"] = launch_type
+            # For capacity provider strategy, check if it includes EXTERNAL
+            has_external = any(cp.get("capacityProvider") == "EXTERNAL" for cp in launch_type)
+            if has_external:
+                dict_data["overrides"]["networkMode"] = network_mode
+            else:
+                # Use awsvpc for Fargate/EC2 capacity providers
+                dict_data["networkConfiguration"] = {
+                    "awsvpcConfiguration": {
+                        "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
+                        "securityGroups": task_security_groups,
+                        "subnets": task_subnets,
+                    },
+                }
         elif launch_type == "FARGATE_SPOT":
             dict_data["capacityProviderStrategy"] = [{"base": 1, "capacityProvider": "FARGATE_SPOT", "weight": 1}]
-        elif launch_type == "EXTERNAL":
-            dict_data["launchType"] = "EXTERNAL"
-            # For ECS Anywhere, network configuration is not needed
-        else:
-            dict_data["launchType"] = launch_type
-            # Add network configuration for Fargate/EC2
+            # Fargate always uses awsvpc network mode
             dict_data["networkConfiguration"] = {
                 "awsvpcConfiguration": {
                     "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
@@ -774,6 +785,36 @@ def _run_task(
                     "subnets": task_subnets,
                 },
             }
+        elif launch_type == "EXTERNAL":
+            dict_data["launchType"] = "EXTERNAL"
+            # For ECS Anywhere, add network mode override
+            dict_data["overrides"]["networkMode"] = network_mode
+            # ECS Anywhere doesn't use awsvpc network configuration
+        elif launch_type == "FARGATE":
+            dict_data["launchType"] = "FARGATE"
+            # Fargate always uses awsvpc network mode, don't override
+            dict_data["networkConfiguration"] = {
+                "awsvpcConfiguration": {
+                    "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
+                    "securityGroups": task_security_groups,
+                    "subnets": task_subnets,
+                },
+            }
+        else:
+            # EC2 launch type
+            dict_data["launchType"] = launch_type
+            # EC2 can use different network modes, but awsvpc is most common
+            # Only override network mode if it's not awsvpc
+            if network_mode != "awsvpc":
+                dict_data["overrides"]["networkMode"] = network_mode
+            else:
+                dict_data["networkConfiguration"] = {
+                    "awsvpcConfiguration": {
+                        "assignPublicIp": "ENABLED" if assign_public_ip else "DISABLED",
+                        "securityGroups": task_security_groups,
+                        "subnets": task_subnets,
+                    },
+                }
     else:
         # Default network configuration for non-EXTERNAL launch types
         dict_data["networkConfiguration"] = {
