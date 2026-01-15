@@ -34,10 +34,10 @@ To use `awsspawner` in your JupyterHub deployment, you need to configure it in y
 ```python
 c.JupyterHub.spawner_class = 'awsspawner.AWSSpawner'
 
-# AWS Region
+# Required: AWS Region
 c.AWSSpawner.aws_region = 'us-east-1'
 
-# ECS Cluster configuration
+# Required: ECS Cluster configuration
 c.AWSSpawner.task_cluster_name = 'your-ecs-cluster-name'
 c.AWSSpawner.task_definition_family = 'jupyter-notebook'
 c.AWSSpawner.task_container_name = 'notebook'
@@ -94,6 +94,9 @@ c.AWSSpawner.use_dynamic_port = True  # Use dynamic port allocation
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
 ]
+
+# Hub connectivity (required for ECS Anywhere)
+c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'  # External URL for containers to reach JupyterHub
 ```
 
 ## Authentication
@@ -158,6 +161,7 @@ c.AWSSpawner.profiles = [
             'memory': 2048,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'hub_connect_url': 'http://jupyterhub-dev.company.com:8000',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == development'}
             ],
@@ -171,6 +175,7 @@ c.AWSSpawner.profiles = [
             'memory': 4096,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'hub_connect_url': 'https://jupyterhub.company.com',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == production'}
             ],
@@ -185,6 +190,7 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
+            'hub_connect_url': 'http://10.0.1.100:8000',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
             ],
@@ -198,6 +204,7 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL', 
             'use_dynamic_port': True,
+            'hub_connect_url': 'http://10.0.1.100:8000',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
             ],
@@ -234,11 +241,49 @@ c.AWSSpawner.port_range_start = 8000
 c.AWSSpawner.port_range_end = 9000
 c.AWSSpawner.use_dynamic_port = True
 
+# IMPORTANT: Configure Hub connectivity for ECS Anywhere
+c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'
+
 # Optional: Add placement constraints
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
 ]
 ```
+
+### Hub Connectivity for ECS Anywhere
+
+**Critical Configuration**: ECS Anywhere containers need to connect back to JupyterHub, but they can't use `127.0.0.1` or `localhost`. You must configure the external URL:
+
+```python
+# Replace with your JupyterHub server's external IP or hostname
+c.AWSSpawner.hub_connect_url = 'http://10.0.1.100:8000'  # Internal IP
+# or
+c.AWSSpawner.hub_connect_url = 'http://jupyterhub.example.com:8000'  # Domain name
+# or  
+c.AWSSpawner.hub_connect_url = 'https://jupyterhub.example.com'  # HTTPS with domain
+```
+
+**How it works**:
+- The spawner automatically updates `JUPYTERHUB_API_URL` in container environment
+- Replaces `127.0.0.1:8081` with your configured URL
+- Maintains the correct API path (`/hub/api`)
+
+**Common scenarios**:
+
+1. **JupyterHub on EC2, ECS Anywhere on-premises**:
+   ```python
+   c.AWSSpawner.hub_connect_url = 'http://ec2-instance-public-ip:8000'
+   ```
+
+2. **JupyterHub behind load balancer**:
+   ```python
+   c.AWSSpawner.hub_connect_url = 'https://jupyterhub.company.com'
+   ```
+
+3. **Same VPC/network**:
+   ```python
+   c.AWSSpawner.hub_connect_url = 'http://10.0.1.100:8000'  # Private IP
+   ```
 
 ### Port Management for ECS Anywhere:
 
@@ -384,6 +429,226 @@ poetry install
 # Run linting
 ./lint.sh
 ```
+
+## Troubleshooting
+
+### Common Issues
+
+#### "name cannot be blank" Error
+
+This error occurs when required configuration parameters are missing or empty:
+
+```
+InvalidParameterException: name cannot be blank
+```
+
+The improved error handling will now show you exactly which parameter is empty:
+
+```
+ValueError: Missing required configuration parameters: task_cluster_name (set c.AWSSpawner.task_cluster_name)
+```
+
+or
+
+```
+ValueError: Container override #0 has empty 'name' field
+```
+
+**Common causes and solutions**:
+
+1. **Missing cluster name**:
+   ```python
+   c.AWSSpawner.task_cluster_name = 'your-ecs-cluster-name'  # Must not be empty
+   ```
+
+2. **Missing container name**:
+   ```python
+   c.AWSSpawner.task_container_name = 'notebook'  # Must not be empty
+   ```
+
+3. **Missing task definition**:
+   ```python
+   c.AWSSpawner.task_definition_family = 'jupyter-notebook'  # Must not be empty
+   ```
+
+4. **Empty environment variables** (usually from JupyterHub internals):
+   ```
+   ValueError: Found environment variables with empty names
+   ```
+   This usually indicates a JupyterHub configuration issue or bug.
+
+#### "Failed to connect to my Hub" Error
+
+This error occurs when containers can't reach JupyterHub:
+
+```
+Failed to connect to my Hub at http://127.0.0.1:8081/hub/api (attempt 1/5). Is it running?
+```
+
+**Root cause**: The container is trying to connect to `127.0.0.1`, which doesn't work from inside a container.
+
+**Solution**: Configure the external Hub URL:
+
+```python
+# Set the URL that containers can use to reach JupyterHub
+c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'
+```
+
+**Debugging steps**:
+
+1. **Find your JupyterHub's external IP**:
+   ```bash
+   # If JupyterHub is on EC2
+   curl http://169.254.169.254/latest/meta-data/public-ipv4
+   
+   # Or check private IP
+   curl http://169.254.169.254/latest/meta-data/local-ipv4
+   ```
+
+2. **Test connectivity from ECS Anywhere node**:
+   ```bash
+   # SSH to your ECS Anywhere node and test
+   curl http://your-jupyterhub-ip:8000/hub/api
+   ```
+
+3. **Check firewall/security groups**:
+   - Ensure port 8000 (or your JupyterHub port) is open
+   - Security groups allow inbound traffic from ECS Anywhere nodes
+   - Network ACLs permit the traffic
+
+4. **Verify the updated environment variables**:
+   Enable INFO logging to see the URL transformation:
+   ```
+   INFO:Updated JUPYTERHUB_API_URL from 'http://127.0.0.1:8081/hub/api' to 'http://10.0.1.100:8000/hub/api'
+   ```
+
+#### "list index out of range" Error
+
+This error occurs when ECS `run_task` succeeds but returns no tasks:
+
+```
+IndexError: list index out of range
+```
+
+The improved error handling will now show you the specific ECS failures:
+
+```
+Exception: ECS run_task failed to create tasks. Detailed analysis:
+ARN: arn:aws:ecs:us-east-1:123456789012:container-instance/abc123 - RESOURCE:MEMORY: Insufficient memory available (Suggestion: Insufficient memory available in the cluster. Try reducing memory requirements or scaling up your cluster.)
+```
+
+**Common causes and solutions**:
+
+1. **Insufficient cluster capacity**:
+   - Scale up your ECS cluster
+   - Reduce CPU/memory requirements
+   - Check cluster utilization
+
+2. **ECS Anywhere node issues**:
+   - Verify ECS Anywhere nodes are running and connected
+   - Check node capacity and available resources
+   - Ensure ECS agent is running on nodes
+
+3. **Placement constraints cannot be satisfied**:
+   ```python
+   # Check your placement constraints
+   c.AWSSpawner.placement_constraints = [
+       {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
+   ]
+   ```
+
+4. **Network configuration issues** (Fargate only):
+   - Verify subnet IDs are correct
+   - Check security group configuration
+   - Ensure subnets have available IP addresses
+
+5. **Task definition compatibility**:
+   - Verify task definition exists and is ACTIVE
+   - Check `requiresCompatibilities` matches your launch type
+   - Ensure task definition is compatible with your cluster
+
+#### Debug Mode
+
+Enable detailed logging to see all parameters passed to ECS:
+
+```python
+# Enable INFO level logging to see all parameters
+c.JupyterHub.log_level = 'INFO'
+
+# Or enable DEBUG level for even more details
+c.JupyterHub.log_level = 'DEBUG'
+```
+
+With INFO level logging, you'll see detailed parameter dumps like:
+
+```
+INFO:=== AWSSpawner Start Parameters ===
+INFO:User: 'ubuntu'
+INFO:Task cluster name: 'my-ecs-cluster'
+INFO:Task container name: 'notebook'
+INFO:Launch type: EXTERNAL
+INFO:CPU: 1024
+INFO:Memory: 2048
+INFO:=== End AWSSpawner Parameters ===
+
+INFO:=== ECS run_task Parameters ===
+INFO:cluster: 'my-ecs-cluster'
+INFO:taskDefinition: 'arn:aws:ecs:us-east-1:123456789012:task-definition/jupyter-notebook:1'
+INFO:launch_type: EXTERNAL
+INFO:task_container_name: 'notebook'
+INFO:=== Environment Variables ===
+INFO:  JUPYTERHUB_API_TOKEN: [REDACTED - 64 chars]
+INFO:  JUPYTERHUB_API_URL: 'http://hub:8081/hub/api'
+INFO:  PATH: '/usr/local/bin:/usr/bin:/bin'
+INFO:=== Final ECS API Request ===
+INFO:ECS run_task request payload: {...}
+INFO:=== End Parameters ===
+```
+
+This detailed logging will help you identify:
+- Missing or incorrect configuration parameters
+- Environment variable issues
+- ECS API request structure
+- Task definition problems
+
+#### Checking ECS Cluster Status
+
+You can check your ECS cluster status using AWS CLI:
+
+```bash
+# Check cluster status
+aws ecs describe-clusters --clusters your-cluster-name
+
+# Check container instances (for ECS Anywhere)
+aws ecs list-container-instances --cluster your-cluster-name
+aws ecs describe-container-instances --cluster your-cluster-name --container-instances instance-id
+
+# Check task definitions
+aws ecs list-task-definitions --family-prefix jupyter-notebook
+aws ecs describe-task-definition --task-definition jupyter-notebook:latest
+
+# Check recent task failures
+aws ecs list-tasks --cluster your-cluster-name --desired-status STOPPED
+```
+
+#### Task Definition Not Found
+
+If you see errors about task definitions not being found, ensure:
+
+1. The task definition family exists in your ECS cluster
+2. The container name matches what's in your task definition
+3. You have proper IAM permissions to access ECS
+
+#### Network Configuration Issues
+
+For Fargate tasks, ensure you have:
+- Valid subnet IDs
+- Valid security group IDs
+- Proper VPC configuration
+
+For ECS Anywhere tasks:
+- Task definition should have appropriate network mode (bridge, host, etc.)
+- No VPC configuration needed
 
 ## License
 

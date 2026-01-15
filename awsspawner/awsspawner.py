@@ -56,6 +56,9 @@ class AWSSpawner(Spawner):
     use_dynamic_port = Bool(default_value=True, config=True, help="Use dynamic port allocation for ECS Anywhere")
     external_instance_id = Unicode(config=True, help="ECS Anywhere instance ID for placement constraints")
     placement_constraints = List(config=True, help="Placement constraints for ECS Anywhere tasks")
+    
+    # Hub connectivity configuration
+    hub_connect_url = Unicode(config=True, help="URL for containers to connect back to JupyterHub. If not set, uses the default hub URL. For ECS Anywhere, this should be the external IP/hostname of the JupyterHub server.")
 
     authentication_class = Type(AWSSpawnerAuthentication, config=True)
     authentication = Instance(AWSSpawnerAuthentication)
@@ -246,6 +249,43 @@ class AWSSpawner(Spawner):
             else 1
         )
 
+    def get_env(self):
+        """Get environment variables for the spawned container, with Hub connectivity fixes"""
+        env = super().get_env()
+        
+        # Fix Hub connectivity for ECS Anywhere
+        if self.hub_connect_url:
+            # Parse the hub_connect_url to replace the host in JUPYTERHUB_API_URL
+            import urllib.parse
+            
+            # Get the original API URL
+            original_api_url = env.get('JUPYTERHUB_API_URL', '')
+            
+            if original_api_url:
+                # Parse both URLs
+                original_parsed = urllib.parse.urlparse(original_api_url)
+                hub_parsed = urllib.parse.urlparse(self.hub_connect_url)
+                
+                # Replace the netloc (host:port) but keep the path
+                new_api_url = original_parsed._replace(
+                    scheme=hub_parsed.scheme or original_parsed.scheme,
+                    netloc=hub_parsed.netloc
+                ).geturl()
+                
+                env['JUPYTERHUB_API_URL'] = new_api_url
+                self.log.info(f"Updated JUPYTERHUB_API_URL from '{original_api_url}' to '{new_api_url}'")
+            
+            # Also update JUPYTERHUB_BASE_URL if needed
+            original_base_url = env.get('JUPYTERHUB_BASE_URL', '')
+            if original_base_url and not original_base_url.startswith('http'):
+                # If base URL is relative, make it absolute using hub_connect_url
+                hub_parsed = urllib.parse.urlparse(self.hub_connect_url)
+                base_scheme_netloc = f"{hub_parsed.scheme}://{hub_parsed.netloc}"
+                env['JUPYTERHUB_BASE_URL'] = base_scheme_netloc + original_base_url
+                self.log.info(f"Updated JUPYTERHUB_BASE_URL to '{env['JUPYTERHUB_BASE_URL']}'")
+        
+        return env
+
     async def start(self):
         self.log.debug("Starting spawner")
 
@@ -269,6 +309,9 @@ class AWSSpawner(Spawner):
         else:
             task_port = self.port  # Use default port for Fargate
             
+        # Initialize actual_task_port early for logging
+        actual_task_port = task_port  # Default to original port
+            
         session = self.authentication.get_session(self.aws_region)
 
         if self.task_definition_arn:
@@ -285,6 +328,57 @@ class AWSSpawner(Spawner):
         try:
             self.calling_run_task = True
             args = self.get_args() + self.notebook_args
+            
+            # Debug logging for troubleshooting
+            self.log.info("=== AWSSpawner Start Parameters ===")
+            self.log.info(f"User: '{self.user.name}'")
+            self.log.info(f"Task cluster name: '{self.task_cluster_name}'")
+            self.log.info(f"Task container name: '{self.task_container_name}'")
+            self.log.info(f"Task definition ARN: '{task_definition['arn']}'")
+            self.log.info(f"Task definition family: '{self.task_definition_family}'")
+            self.log.info(f"Launch type: {self.launch_type}")
+            self.log.info(f"AWS region: '{self.aws_region}'")
+            self.log.info(f"Image: '{self.image}'")
+            self.log.info(f"CPU: {self.cpu}")
+            self.log.info(f"Memory: {self.memory}")
+            self.log.info(f"Memory reservation: {self.memory_reservation}")
+            self.log.info(f"Task port: {task_port}")
+            self.log.info(f"Actual task port: {actual_task_port} (may be updated after task starts for ECS Anywhere)")
+            self.log.info(f"Notebook scheme: '{self.notebook_scheme}'")
+            self.log.info(f"Owner tag name: '{self.task_owner_tag_name}'")
+            self.log.info(f"Task role ARN: '{self.task_role_arn}'")
+            self.log.info(f"Security groups: {self.task_security_groups}")
+            self.log.info(f"Subnets: {self.task_subnets}")
+            self.log.info(f"Assign public IP: {self.assign_public_ip}")
+            self.log.info(f"Placement constraints: {self.placement_constraints}")
+            self.log.info(f"Args join: '{self.args_join}'")
+            self.log.info(f"Notebook args: {self.notebook_args}")
+            self.log.info(f"Command: {self.cmd}")
+            self.log.info(f"Args: {args}")
+            self.log.info(f"Final command + args: {self.cmd + args}")
+            self.log.info("=== End AWSSpawner Parameters ===")
+            
+            # Validate required parameters before calling _run_task with specific error messages
+            missing_params = []
+            
+            if not self.task_cluster_name:
+                missing_params.append("task_cluster_name (set c.AWSSpawner.task_cluster_name)")
+            if not self.task_container_name:
+                missing_params.append("task_container_name (set c.AWSSpawner.task_container_name)")
+            if not task_definition["arn"]:
+                missing_params.append("task_definition_arn (set c.AWSSpawner.task_definition_arn or task_definition_family)")
+            
+            if missing_params:
+                raise ValueError(f"Missing required configuration parameters: {', '.join(missing_params)}")
+            
+            # Validate environment variables
+            env_vars = self.get_env()
+            self.log.info(f"Environment variables count: {len(env_vars)}")
+            
+            empty_env_vars = [name for name, value in env_vars.items() if not name or not name.strip()]
+            if empty_env_vars:
+                raise ValueError(f"Found environment variables with empty names. This usually indicates a JupyterHub configuration issue. Empty variable names: {empty_env_vars}")
+            
             run_response = _run_task(
                 self.log,
                 session,
@@ -308,7 +402,35 @@ class AWSSpawner(Spawner):
                 self.enable_ecs_managed_tags,  # Pass enable_ecs_managed_tags parameter
                 self.placement_constraints,  # Pass placement constraints for ECS Anywhere
             )
+            
+            # Validate run_task response
+            if not run_response:
+                raise Exception("ECS run_task returned empty response")
+            
+            if "tasks" not in run_response:
+                raise Exception(f"ECS run_task response missing 'tasks' field. Response: {run_response}")
+            
+            if not run_response["tasks"]:
+                # Check for failures
+                failures = run_response.get("failures", [])
+                if failures:
+                    analyzed_failures = _analyze_ecs_failures(failures)
+                    raise Exception(f"ECS run_task failed to create tasks. Detailed analysis:\n" + "\n".join(analyzed_failures))
+                else:
+                    raise Exception("ECS run_task returned no tasks and no failure information. This may indicate:\n"
+                                  "1. Insufficient cluster capacity\n"
+                                  "2. All container instances are busy\n"
+                                  "3. Placement constraints cannot be satisfied\n"
+                                  "4. Network configuration issues (for Fargate)\n"
+                                  "5. Task definition compatibility issues")
+            
             task_arn = run_response["tasks"][0]["taskArn"]
+            self.log.info(f"Successfully created ECS task: {task_arn}")
+            
+            # Log any warnings from the response
+            if "failures" in run_response and run_response["failures"]:
+                self.log.warning(f"ECS run_task had some failures: {run_response['failures']}")
+            
             self.progress_buffer.write({"progress": 1})
         finally:
             self.calling_run_task = False
@@ -318,7 +440,6 @@ class AWSSpawner(Spawner):
         max_polls = self.start_timeout / 2
         num_polls = 0
         task_ip = ""
-        actual_task_port = task_port  # Default to original port
         
         while task_ip == "":
             num_polls += 1
@@ -333,6 +454,7 @@ class AWSSpawner(Spawner):
                 if port_from_task:
                     actual_task_port = port_from_task
                     self.allocated_port = port_from_task  # Store for state persistence
+                    self.log.info(f"Updated actual task port to: {actual_task_port}")
                     
             await gen.sleep(1)
             self.progress_buffer.write({"progress": 1 + num_polls / max_polls * 10, "message": "Getting network address.."})
@@ -385,7 +507,7 @@ class AWSSpawner(Spawner):
 ALLOWED_STATUSES = ("", "PROVISIONING", "PENDING", "RUNNING")
 
 
-def _ensure_stopped_task(_, session, task_cluster_name, task_arn):
+def _ensure_stopped_task(logger, session, task_cluster_name, task_arn):
     client = session.client("ecs")
     client.stop_task(cluster=task_cluster_name, task=task_arn)
 
@@ -416,6 +538,9 @@ def _get_task_port(logger, session, task_cluster_name, task_arn, container_name)
                     return container_port
     
     return None
+
+
+def _get_task_ip(logger, session, task_cluster_name, task_arn):
     """Get IP address for task, supporting both Fargate and ECS Anywhere"""
     described_task = _describe_task(logger, session, task_cluster_name, task_arn)
     
@@ -693,7 +818,7 @@ def _get_task_status(logger, session, task_cluster_name, task_arn):
     return status
 
 
-def _describe_task(_, session, task_cluster_name, task_arn):
+def _describe_task(logger, session, task_cluster_name, task_arn):
     client = session.client("ecs")
 
     described_tasks = client.describe_tasks(cluster=task_cluster_name, tasks=[task_arn])
@@ -712,7 +837,7 @@ def _describe_task(_, session, task_cluster_name, task_arn):
 
 
 def _run_task(
-    _,
+    logger,
     session,
     launch_type,
     assign_public_ip,
@@ -734,10 +859,31 @@ def _run_task(
     enable_ecs_managed_tags=None,
     placement_constraints=None,
 ):
+    # Validate required parameters with specific error messages
+    if not task_cluster_name or not task_cluster_name.strip():
+        raise ValueError("task_cluster_name cannot be empty. Please set c.AWSSpawner.task_cluster_name in your JupyterHub config.")
+    if not task_container_name or not task_container_name.strip():
+        raise ValueError("task_container_name cannot be empty. Please set c.AWSSpawner.task_container_name in your JupyterHub config.")
+    if not task_definition_arn or not task_definition_arn.strip():
+        raise ValueError("task_definition_arn cannot be empty. Please set c.AWSSpawner.task_definition_arn or ensure task definition family is configured.")
+    
     if args_join != "":
         task_command_and_args = [args_join.join(task_command_and_args)]
 
     client = session.client("ecs")
+
+    # Validate and filter environment variables
+    valid_env_vars = []
+    invalid_env_vars = []
+    
+    for name, value in task_env.items():
+        if not name or not name.strip():
+            invalid_env_vars.append(f"Empty environment variable name with value: '{value}'")
+        else:
+            valid_env_vars.append({"name": name, "value": value})
+    
+    if invalid_env_vars:
+        raise ValueError(f"Invalid environment variables found: {'; '.join(invalid_env_vars)}")
 
     dict_data = {
         "cluster": task_cluster_name,
@@ -747,20 +893,27 @@ def _run_task(
             "containerOverrides": [
                 {
                     "command": task_command_and_args,
-                    "environment": [
-                        {
-                            "name": name,
-                            "value": value,
-                        }
-                        for name, value in task_env.items()
-                    ],
+                    "environment": valid_env_vars,
                     "name": task_container_name,
                 }
             ],
         },
         "count": 1,
-        "tags": [{"key": owner_tag_name, "value": username}],
     }
+    
+    # Validate and add tags if both key and value are not empty
+    if owner_tag_name and owner_tag_name.strip():
+        if username and username.strip():
+            dict_data["tags"] = [{"key": owner_tag_name, "value": username}]
+        else:
+            raise ValueError(f"username cannot be empty when owner_tag_name is set to '{owner_tag_name}'. Check user configuration.")
+    elif owner_tag_name == "":
+        # owner_tag_name is explicitly set to empty string, skip tagging
+        pass
+    else:
+        # owner_tag_name is None or not configured, use default behavior
+        if username and username.strip():
+            dict_data["tags"] = [{"key": "Jupyter-User", "value": username}]
 
     # Add propagateTags if provided
     if propagate_tags is not None:
@@ -841,7 +994,133 @@ def _run_task(
             },
         }
         
-    return client.run_task(**dict_data)
+    # Print all parameters before calling run_task for debugging
+    logger.info("=== ECS run_task Parameters ===")
+    logger.info(f"cluster: '{task_cluster_name}'")
+    logger.info(f"taskDefinition: '{task_definition_arn}'")
+    logger.info(f"launch_type: {launch_type}")
+    logger.info(f"assign_public_ip: {assign_public_ip}")
+    logger.info(f"task_role_arn: '{task_role_arn}'")
+    logger.info(f"task_container_name: '{task_container_name}'")
+    logger.info(f"task_security_groups: {task_security_groups}")
+    logger.info(f"task_subnets: {task_subnets}")
+    logger.info(f"task_command_and_args: {task_command_and_args}")
+    logger.info(f"cpu: {cpu}")
+    logger.info(f"memory: {memory}")
+    logger.info(f"memory_reservation: {memory_reservation}")
+    logger.info(f"args_join: '{args_join}'")
+    logger.info(f"username: '{username}'")
+    logger.info(f"owner_tag_name: '{owner_tag_name}'")
+    logger.info(f"propagate_tags: {propagate_tags}")
+    logger.info(f"enable_ecs_managed_tags: {enable_ecs_managed_tags}")
+    logger.info(f"placement_constraints: {placement_constraints}")
+    
+    logger.info("=== Environment Variables ===")
+    for name, value in task_env.items():
+        # Don't log sensitive values, just show the key and value length
+        if any(sensitive in name.upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
+            logger.info(f"  {name}: [REDACTED - {len(str(value))} chars]")
+        else:
+            logger.info(f"  {name}: '{value}'")
+    
+    logger.info("=== Final ECS API Request ===")
+    # Create a copy for logging (without sensitive data)
+    log_dict_data = dict(dict_data)
+    if 'overrides' in log_dict_data and 'containerOverrides' in log_dict_data['overrides']:
+        for container in log_dict_data['overrides']['containerOverrides']:
+            if 'environment' in container:
+                for env_var in container['environment']:
+                    if any(sensitive in env_var['name'].upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
+                        env_var['value'] = f"[REDACTED - {len(env_var['value'])} chars]"
+    
+    logger.info(f"ECS run_task request payload: {log_dict_data}")
+    logger.info("=== End Parameters ===")
+    
+    try:
+        logger.info("Calling ECS run_task...")
+        response = client.run_task(**dict_data)
+        
+        # Log the response for debugging
+        logger.info("=== ECS run_task Response ===")
+        logger.info(f"Response: {response}")
+        logger.info("=== End Response ===")
+        
+        return response
+    except Exception as e:
+        logger.error(f"ECS run_task failed with error: {e}")
+        _handle_run_task_error(e, dict_data)
+
+
+def _analyze_ecs_failures(failures):
+    """Analyze ECS task failures and provide helpful error messages"""
+    common_issues = {
+        "RESOURCE:MEMORY": "Insufficient memory available in the cluster. Try reducing memory requirements or scaling up your cluster.",
+        "RESOURCE:CPU": "Insufficient CPU available in the cluster. Try reducing CPU requirements or scaling up your cluster.",
+        "RESOURCE:PORTS": "Required ports are not available. This often happens with ECS Anywhere when ports are already in use.",
+        "ATTRIBUTE": "Task placement constraints cannot be satisfied. Check your placement constraints and node attributes.",
+        "AGENT": "ECS agent is not running or not connected. Check your ECS Anywhere node status.",
+        "TASK_DEFINITION": "Task definition is invalid or not found. Verify your task definition exists and is active.",
+        "SERVICE": "Service-related error. Check your ECS service configuration.",
+        "CLUSTER": "Cluster-related error. Verify your cluster exists and is active.",
+    }
+    
+    analyzed_failures = []
+    for failure in failures:
+        reason = failure.get("reason", "")
+        detail = failure.get("detail", "")
+        arn = failure.get("arn", "Unknown")
+        
+        # Try to match common failure patterns
+        helpful_msg = None
+        for pattern, message in common_issues.items():
+            if pattern in reason:
+                helpful_msg = message
+                break
+        
+        if helpful_msg:
+            analyzed_failures.append(f"ARN: {arn} - {reason}: {detail} (Suggestion: {helpful_msg})")
+        else:
+            analyzed_failures.append(f"ARN: {arn} - {reason}: {detail}")
+    
+    return analyzed_failures
+
+
+def _handle_run_task_error(error, dict_data):
+    """Provide detailed error information for RunTask failures"""
+    error_msg = str(error)
+    
+    if "name cannot be blank" in error_msg:
+        # Analyze the dict_data to find potential blank names
+        issues = []
+        
+        # Check container name
+        container_overrides = dict_data.get("overrides", {}).get("containerOverrides", [])
+        for i, container in enumerate(container_overrides):
+            if not container.get("name"):
+                issues.append(f"Container override #{i} has empty 'name' field")
+        
+        # Check environment variables
+        for i, container in enumerate(container_overrides):
+            env_vars = container.get("environment", [])
+            for j, env_var in enumerate(env_vars):
+                if not env_var.get("name"):
+                    issues.append(f"Container #{i}, environment variable #{j} has empty 'name' field")
+        
+        # Check tags
+        tags = dict_data.get("tags", [])
+        for i, tag in enumerate(tags):
+            if not tag.get("key"):
+                issues.append(f"Tag #{i} has empty 'key' field")
+        
+        if issues:
+            detailed_msg = f"ECS RunTask failed with 'name cannot be blank'. Specific issues found: {'; '.join(issues)}"
+        else:
+            detailed_msg = f"ECS RunTask failed with 'name cannot be blank'. Check your JupyterHub configuration for empty required fields."
+        
+        raise ValueError(detailed_msg) from error
+    
+    # Re-raise original error if not a "name cannot be blank" issue
+    raise error
 
 
 class AsyncIteratorBuffer:
