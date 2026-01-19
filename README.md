@@ -95,8 +95,9 @@ c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
 ]
 
-# Hub connectivity (required for ECS Anywhere)
-c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'  # External URL for containers to reach JupyterHub
+# Hub connectivity (only needed if ECS Anywhere containers can't reach JupyterHub)
+# c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'  # Uncomment if needed
+c.JupyterHub.hub_ip = 'xxx.xxx.xxx.xxx'
 ```
 
 ## Authentication
@@ -161,7 +162,7 @@ c.AWSSpawner.profiles = [
             'memory': 2048,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'hub_connect_url': 'http://jupyterhub-dev.company.com:8000',
+            # 'hub_connect_url': 'http://jupyterhub-dev.company.com:8000',  # Only if needed
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == development'}
             ],
@@ -175,7 +176,7 @@ c.AWSSpawner.profiles = [
             'memory': 4096,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'hub_connect_url': 'https://jupyterhub.company.com',
+            # 'hub_connect_url': 'https://jupyterhub.company.com',  # Only if needed
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:environment == production'}
             ],
@@ -190,7 +191,6 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL',
             'use_dynamic_port': True,
-            'hub_connect_url': 'http://10.0.1.100:8000',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:memory-optimized == true'}
             ],
@@ -204,7 +204,6 @@ c.AWSSpawner.profiles = [
             'memory': 8192,
             'launch_type': 'EXTERNAL', 
             'use_dynamic_port': True,
-            'hub_connect_url': 'http://10.0.1.100:8000',
             'placement_constraints': [
                 {'type': 'memberOf', 'expression': 'attribute:gpu-enabled == true'}
             ],
@@ -241,8 +240,8 @@ c.AWSSpawner.port_range_start = 8000
 c.AWSSpawner.port_range_end = 9000
 c.AWSSpawner.use_dynamic_port = True
 
-# IMPORTANT: Configure Hub connectivity for ECS Anywhere
-c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'
+# IMPORTANT: Configure Hub connectivity only if needed for ECS Anywhere
+# c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'
 
 # Optional: Add placement constraints
 c.AWSSpawner.placement_constraints = [
@@ -252,7 +251,13 @@ c.AWSSpawner.placement_constraints = [
 
 ### Hub Connectivity for ECS Anywhere
 
-**Critical Configuration**: ECS Anywhere containers need to connect back to JupyterHub, but they can't use `127.0.0.1` or `localhost`. You must configure the external URL:
+**When is this needed?**: Only for ECS Anywhere deployments where containers can't reach JupyterHub via the default internal URLs.
+
+**Why wasn't this needed before?**: 
+- **Fargate tasks** run in the same VPC as JupyterHub and can use internal networking
+- **ECS Anywhere tasks** may run on remote/edge nodes outside the VPC
+
+**Configuration** (only if containers fail to connect):
 
 ```python
 # Replace with your JupyterHub server's external IP or hostname
@@ -261,6 +266,13 @@ c.AWSSpawner.hub_connect_url = 'http://10.0.1.100:8000'  # Internal IP
 c.AWSSpawner.hub_connect_url = 'http://jupyterhub.example.com:8000'  # Domain name
 # or  
 c.AWSSpawner.hub_connect_url = 'https://jupyterhub.example.com'  # HTTPS with domain
+```
+
+**Auto-detection**: The spawner will warn you if ECS Anywhere containers might have connectivity issues:
+
+```
+WARNING: Using ECS Anywhere without hub_connect_url configured. 
+If containers fail to connect to JupyterHub, set c.AWSSpawner.hub_connect_url
 ```
 
 **How it works**:

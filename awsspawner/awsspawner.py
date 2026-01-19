@@ -253,8 +253,18 @@ class AWSSpawner(Spawner):
         """Get environment variables for the spawned container, with Hub connectivity fixes"""
         env = super().get_env()
         
-        # Fix Hub connectivity for ECS Anywhere
-        if self.hub_connect_url:
+        # Log the original environment variables from JupyterHub base class
+        self.log.info("=== Original JupyterHub Environment Variables ===")
+        for key, value in env.items():
+            if key.startswith('JUPYTERHUB_'):
+                if 'TOKEN' in key:
+                    self.log.info(f"  {key}: [REDACTED - {len(value)} chars]")
+                else:
+                    self.log.info(f"  {key}: '{value}'")
+        self.log.info("=== End Original Environment Variables ===")
+        
+        # Only fix Hub connectivity if explicitly configured and using ECS Anywhere
+        if self.hub_connect_url and self._is_ecs_anywhere():
             # Parse the hub_connect_url to replace the host in JUPYTERHUB_API_URL
             import urllib.parse
             
@@ -273,7 +283,7 @@ class AWSSpawner(Spawner):
                 ).geturl()
                 
                 env['JUPYTERHUB_API_URL'] = new_api_url
-                self.log.info(f"Updated JUPYTERHUB_API_URL from '{original_api_url}' to '{new_api_url}'")
+                self.log.info(f"Updated JUPYTERHUB_API_URL from '{original_api_url}' to '{new_api_url}' for ECS Anywhere")
             
             # Also update JUPYTERHUB_BASE_URL if needed
             original_base_url = env.get('JUPYTERHUB_BASE_URL', '')
@@ -282,7 +292,11 @@ class AWSSpawner(Spawner):
                 hub_parsed = urllib.parse.urlparse(self.hub_connect_url)
                 base_scheme_netloc = f"{hub_parsed.scheme}://{hub_parsed.netloc}"
                 env['JUPYTERHUB_BASE_URL'] = base_scheme_netloc + original_base_url
-                self.log.info(f"Updated JUPYTERHUB_BASE_URL to '{env['JUPYTERHUB_BASE_URL']}'")
+                self.log.info(f"Updated JUPYTERHUB_BASE_URL to '{env['JUPYTERHUB_BASE_URL']}' for ECS Anywhere")
+        elif self._is_ecs_anywhere():
+            # Warn if using ECS Anywhere without hub_connect_url
+            self.log.warning("Using ECS Anywhere without hub_connect_url configured. "
+                           "If containers fail to connect to JupyterHub, set c.AWSSpawner.hub_connect_url")
         
         return env
 
@@ -327,8 +341,18 @@ class AWSSpawner(Spawner):
         self.progress_buffer.write({"progress": 0.5, "message": "Run task..."})
         try:
             self.calling_run_task = True
-            args = self.get_args() + self.notebook_args
+
+
+    
+            # Handle port allocation for ECS Anywhere
+            if self._is_ecs_anywhere():
+                # For ECS Anywhere, use port 80 instead of dynamic allocation
+                self.port = 80
+                self.ip = '0.0.0.0'
+
             
+            args = self.get_args() + self.notebook_args
+
             # Debug logging for troubleshooting
             self.log.info("=== AWSSpawner Start Parameters ===")
             self.log.info(f"User: '{self.user.name}'")
@@ -379,6 +403,9 @@ class AWSSpawner(Spawner):
             if empty_env_vars:
                 raise ValueError(f"Found environment variables with empty names. This usually indicates a JupyterHub configuration issue. Empty variable names: {empty_env_vars}")
             
+
+
+
             run_response = _run_task(
                 self.log,
                 session,
@@ -448,13 +475,8 @@ class AWSSpawner(Spawner):
 
             task_ip = _get_task_ip(self.log, session, self.task_cluster_name, task_arn)
             
-            # For ECS Anywhere, also get the actual port from task
-            if self._is_ecs_anywhere() and task_ip:
-                port_from_task = _get_task_port(self.log, session, self.task_cluster_name, task_arn, self.task_container_name)
-                if port_from_task:
-                    actual_task_port = port_from_task
-                    self.allocated_port = port_from_task  # Store for state persistence
-                    self.log.info(f"Updated actual task port to: {actual_task_port}")
+            self.log.info(f"Found task_ip: {task_ip}")
+            
                     
             await gen.sleep(1)
             self.progress_buffer.write({"progress": 1 + num_polls / max_polls * 10, "message": "Getting network address.."})
@@ -480,7 +502,18 @@ class AWSSpawner(Spawner):
         await gen.sleep(1)
 
         self.progress_buffer.close()
+        # For ECS Anywhere, also get the actual port from task
+        if self._is_ecs_anywhere() and task_ip:
+            self.log.info("Trying to find task port")
+            port_from_task = _get_task_port(self.log, session, self.task_cluster_name, task_arn, self.task_container_name)
+            self.log.info(f"Found task port: {port_from_task}")
+            if port_from_task:
+                actual_task_port = port_from_task
+                self.allocated_port = port_from_task  # Store for state persistence
+                self.log.info(f"Updated actual task port to: {actual_task_port}")
+                
 
+        self.log.debug(f"{self.notebook_scheme}://{task_ip}:{actual_task_port}")
         return f"{self.notebook_scheme}://{task_ip}:{actual_task_port}"
 
     async def stop(self, now=False):
@@ -515,7 +548,8 @@ def _ensure_stopped_task(logger, session, task_cluster_name, task_arn):
 def _get_task_port(logger, session, task_cluster_name, task_arn, container_name):
     """Get the actual port used by the task from run_task response"""
     described_task = _describe_task(logger, session, task_cluster_name, task_arn)
-    
+    logger.info(described_task)
+
     if not described_task:
         return None
     
@@ -822,7 +856,7 @@ def _describe_task(logger, session, task_cluster_name, task_arn):
     client = session.client("ecs")
 
     described_tasks = client.describe_tasks(cluster=task_cluster_name, tasks=[task_arn])
-
+    logger.info(described_tasks)
     # Very strangely, sometimes 'tasks' is returned, sometimes 'task'
     # Also, creating a task seems to be eventually consistent, so it might
     # not be present at all
@@ -1018,20 +1052,20 @@ def _run_task(
     logger.info("=== Environment Variables ===")
     for name, value in task_env.items():
         # Don't log sensitive values, just show the key and value length
-        if any(sensitive in name.upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
-            logger.info(f"  {name}: [REDACTED - {len(str(value))} chars]")
-        else:
-            logger.info(f"  {name}: '{value}'")
+        #if any(sensitive in name.upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
+        #    logger.info(f"  {name}: [REDACTED - {len(str(value))} chars]")
+        #else:
+        logger.info(f"  {name}: '{value}'")
     
     logger.info("=== Final ECS API Request ===")
     # Create a copy for logging (without sensitive data)
     log_dict_data = dict(dict_data)
-    if 'overrides' in log_dict_data and 'containerOverrides' in log_dict_data['overrides']:
-        for container in log_dict_data['overrides']['containerOverrides']:
-            if 'environment' in container:
-                for env_var in container['environment']:
-                    if any(sensitive in env_var['name'].upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
-                        env_var['value'] = f"[REDACTED - {len(env_var['value'])} chars]"
+    #if 'overrides' in log_dict_data and 'containerOverrides' in log_dict_data['overrides']:
+        #for container in log_dict_data['overrides']['containerOverrides']:
+            #if 'environment' in container:
+                #for env_var in container['environment']:
+                    #if any(sensitive in env_var['name'].upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
+                    #    env_var['value'] = f"[REDACTED - {len(env_var['value'])} chars]"
     
     logger.info(f"ECS run_task request payload: {log_dict_data}")
     logger.info("=== End Parameters ===")
