@@ -281,7 +281,7 @@ class AWSSpawner(Spawner):
             # Handle port allocation for ECS Anywhere
             if self._is_ecs_anywhere():
                 # For ECS Anywhere, use port 80 instead of dynamic allocation
-                self.port = 80
+                self.port = 8888
                 self.ip = '0.0.0.0'
 
             
@@ -856,7 +856,7 @@ def _run_task(
     dict_data = {
         "cluster": task_cluster_name,
         "taskDefinition": task_definition_arn,
-        "enableExecuteCommand": True,
+#        "enableExecuteCommand": True,
         "overrides": {
             "containerOverrides": [
                 {
