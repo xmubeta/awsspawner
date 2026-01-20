@@ -50,10 +50,6 @@ class AWSSpawner(Spawner):
     propagate_tags = Unicode("TASK_DEFINITION", config=True, help="How to propagate tags. Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'")
     enable_ecs_managed_tags = Bool(True, config=True, help="Whether to enable Amazon ECS managed tags for the task")
     
-    # ECS Anywhere specific configurations
-    port_range_start = Int(default_value=8000, config=True, help="Start of port range for ECS Anywhere dynamic allocation")
-    port_range_end = Int(default_value=9000, config=True, help="End of port range for ECS Anywhere dynamic allocation")
-    use_dynamic_port = Bool(default_value=True, config=True, help="Use dynamic port allocation for ECS Anywhere")
     external_instance_id = Unicode(config=True, help="ECS Anywhere instance ID for placement constraints")
     placement_constraints = List(config=True, help="Placement constraints for ECS Anywhere tasks")
     
@@ -136,68 +132,6 @@ class AWSSpawner(Spawner):
                 (isinstance(self.launch_type, list) and 
                  any(cp.get("capacityProvider") == "EXTERNAL" for cp in self.launch_type)))
     
-    async def _allocate_port_for_node(self):
-        """Allocate available port for ECS Anywhere node"""
-        if not self.use_dynamic_port:
-            return self._deterministic_port_allocation()
-            
-        session = self.authentication.get_session(self.aws_region)
-        
-        # Get used ports on the same node
-        used_ports = await self._get_used_ports_on_node(session)
-        
-        # Find available port in range
-        for port in range(self.port_range_start, self.port_range_end + 1):
-            if port not in used_ports:
-                self.log.info(f"Allocated port {port} for user {self.user.name}")
-                self.allocated_port = port
-                return port
-        
-        raise Exception(f"No available ports in range {self.port_range_start}-{self.port_range_end}")
-    
-    def _deterministic_port_allocation(self):
-        """Generate deterministic port based on username"""
-        import hashlib
-        
-        # Generate hash from username
-        user_hash = hashlib.md5(self.user.name.encode()).hexdigest()
-        port_offset = int(user_hash[:4], 16) % (self.port_range_end - self.port_range_start)
-        port = self.port_range_start + port_offset
-        
-        self.log.info(f"Assigned deterministic port {port} for user {self.user.name}")
-        self.allocated_port = port
-        return port
-    
-    async def _get_used_ports_on_node(self, session):
-        """Get ports already in use on ECS Anywhere nodes"""
-        client = session.client("ecs")
-        used_ports = set()
-        
-        try:
-            # List all tasks in the cluster
-            response = client.list_tasks(cluster=self.task_cluster_name)
-            
-            if response["taskArns"]:
-                # Describe all tasks
-                tasks_response = client.describe_tasks(
-                    cluster=self.task_cluster_name,
-                    tasks=response["taskArns"]
-                )
-                
-                for task in tasks_response["tasks"]:
-                    # Only check tasks running on ECS Anywhere nodes
-                    if (task.get("launchType") == "EXTERNAL" and 
-                        task.get("lastStatus") in ["RUNNING", "PENDING"]):
-                        
-                        # Extract port information from task
-                        ports = self._extract_ports_from_task(task)
-                        used_ports.update(ports)
-                        
-        except Exception as e:
-            self.log.error(f"Failed to get used ports: {e}")
-        
-        return used_ports
-    
     def _extract_ports_from_task(self, task):
         """Extract used ports from task definition"""
         ports = set()
@@ -257,10 +191,10 @@ class AWSSpawner(Spawner):
         self.log.info("=== Original JupyterHub Environment Variables ===")
         for key, value in env.items():
             if key.startswith('JUPYTERHUB_'):
-                if 'TOKEN' in key:
-                    self.log.info(f"  {key}: [REDACTED - {len(value)} chars]")
-                else:
-                    self.log.info(f"  {key}: '{value}'")
+                #if 'TOKEN' in key:
+                #    self.log.info(f"  {key}: [REDACTED - {len(value)} chars]")
+                #else:
+                self.log.info(f"  {key}: '{value}'")
         self.log.info("=== End Original Environment Variables ===")
         
         # Only fix Hub connectivity if explicitly configured and using ECS Anywhere
