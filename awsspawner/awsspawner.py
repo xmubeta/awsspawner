@@ -220,13 +220,13 @@ class AWSSpawner(Spawner):
                 self.log.info(f"Updated JUPYTERHUB_API_URL from '{original_api_url}' to '{new_api_url}' for ECS Anywhere")
             
             # Also update JUPYTERHUB_BASE_URL if needed
-            original_base_url = env.get('JUPYTERHUB_BASE_URL', '')
-            if original_base_url and not original_base_url.startswith('http'):
+            #original_base_url = env.get('JUPYTERHUB_BASE_URL', '')
+            #if original_base_url and not original_base_url.startswith('http'):
                 # If base URL is relative, make it absolute using hub_connect_url
-                hub_parsed = urllib.parse.urlparse(self.hub_connect_url)
-                base_scheme_netloc = f"{hub_parsed.scheme}://{hub_parsed.netloc}"
-                env['JUPYTERHUB_BASE_URL'] = base_scheme_netloc + original_base_url
-                self.log.info(f"Updated JUPYTERHUB_BASE_URL to '{env['JUPYTERHUB_BASE_URL']}' for ECS Anywhere")
+             #   hub_parsed = urllib.parse.urlparse(self.hub_connect_url)
+            #    base_scheme_netloc = f"{hub_parsed.scheme}://{hub_parsed.netloc}"
+             #   env['JUPYTERHUB_BASE_URL'] = base_scheme_netloc + original_base_url
+            #    self.log.info(f"Updated JUPYTERHUB_BASE_URL to '{env['JUPYTERHUB_BASE_URL']}' for ECS Anywhere")
         elif self._is_ecs_anywhere():
             # Warn if using ECS Anywhere without hub_connect_url
             self.log.warning("Using ECS Anywhere without hub_connect_url configured. "
