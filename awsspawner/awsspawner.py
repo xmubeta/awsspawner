@@ -188,14 +188,14 @@ class AWSSpawner(Spawner):
         env = super().get_env()
         
         # Log the original environment variables from JupyterHub base class
-        self.log.info("=== Original JupyterHub Environment Variables ===")
+        self.log.debug("=== Original JupyterHub Environment Variables ===")
         for key, value in env.items():
             if key.startswith('JUPYTERHUB_'):
                 #if 'TOKEN' in key:
-                #    self.log.info(f"  {key}: [REDACTED - {len(value)} chars]")
+                #    self.log.debug(f"  {key}: [REDACTED - {len(value)} chars]")
                 #else:
-                self.log.info(f"  {key}: '{value}'")
-        self.log.info("=== End Original Environment Variables ===")
+                self.log.debug(f"  {key}: '{value}'")
+        self.log.debug("=== End Original Environment Variables ===")
         
         # Only fix Hub connectivity if explicitly configured and using ECS Anywhere
         if self.hub_connect_url and self._is_ecs_anywhere():
@@ -277,44 +277,37 @@ class AWSSpawner(Spawner):
             self.calling_run_task = True
 
 
-    
-            # Handle port allocation for ECS Anywhere
-            if self._is_ecs_anywhere():
-                # For ECS Anywhere, use port 80 instead of dynamic allocation
-                self.port = 8888
-                self.ip = '0.0.0.0'
-
             
             args = self.get_args() + self.notebook_args
 
             # Debug logging for troubleshooting
-            self.log.info("=== AWSSpawner Start Parameters ===")
-            self.log.info(f"User: '{self.user.name}'")
-            self.log.info(f"Task cluster name: '{self.task_cluster_name}'")
-            self.log.info(f"Task container name: '{self.task_container_name}'")
-            self.log.info(f"Task definition ARN: '{task_definition['arn']}'")
-            self.log.info(f"Task definition family: '{self.task_definition_family}'")
-            self.log.info(f"Launch type: {self.launch_type}")
-            self.log.info(f"AWS region: '{self.aws_region}'")
-            self.log.info(f"Image: '{self.image}'")
-            self.log.info(f"CPU: {self.cpu}")
-            self.log.info(f"Memory: {self.memory}")
-            self.log.info(f"Memory reservation: {self.memory_reservation}")
-            self.log.info(f"Task port: {task_port}")
-            self.log.info(f"Actual task port: {actual_task_port} (may be updated after task starts for ECS Anywhere)")
-            self.log.info(f"Notebook scheme: '{self.notebook_scheme}'")
-            self.log.info(f"Owner tag name: '{self.task_owner_tag_name}'")
-            self.log.info(f"Task role ARN: '{self.task_role_arn}'")
-            self.log.info(f"Security groups: {self.task_security_groups}")
-            self.log.info(f"Subnets: {self.task_subnets}")
-            self.log.info(f"Assign public IP: {self.assign_public_ip}")
-            self.log.info(f"Placement constraints: {self.placement_constraints}")
-            self.log.info(f"Args join: '{self.args_join}'")
-            self.log.info(f"Notebook args: {self.notebook_args}")
-            self.log.info(f"Command: {self.cmd}")
-            self.log.info(f"Args: {args}")
-            self.log.info(f"Final command + args: {self.cmd + args}")
-            self.log.info("=== End AWSSpawner Parameters ===")
+            self.log.debug("=== AWSSpawner Start Parameters ===")
+            self.log.debug(f"User: '{self.user.name}'")
+            self.log.debug(f"Task cluster name: '{self.task_cluster_name}'")
+            self.log.debug(f"Task container name: '{self.task_container_name}'")
+            self.log.debug(f"Task definition ARN: '{task_definition['arn']}'")
+            self.log.debug(f"Task definition family: '{self.task_definition_family}'")
+            self.log.debug(f"Launch type: {self.launch_type}")
+            self.log.debug(f"AWS region: '{self.aws_region}'")
+            self.log.debug(f"Image: '{self.image}'")
+            self.log.debug(f"CPU: {self.cpu}")
+            self.log.debug(f"Memory: {self.memory}")
+            self.log.debug(f"Memory reservation: {self.memory_reservation}")
+            self.log.debug(f"Task port: {task_port}")
+            self.log.debug(f"Actual task port: {actual_task_port} (may be updated after task starts for ECS Anywhere)")
+            self.log.debug(f"Notebook scheme: '{self.notebook_scheme}'")
+            self.log.debug(f"Owner tag name: '{self.task_owner_tag_name}'")
+            self.log.debug(f"Task role ARN: '{self.task_role_arn}'")
+            self.log.debug(f"Security groups: {self.task_security_groups}")
+            self.log.debug(f"Subnets: {self.task_subnets}")
+            self.log.debug(f"Assign public IP: {self.assign_public_ip}")
+            self.log.debug(f"Placement constraints: {self.placement_constraints}")
+            self.log.debug(f"Args join: '{self.args_join}'")
+            self.log.debug(f"Notebook args: {self.notebook_args}")
+            self.log.debug(f"Command: {self.cmd}")
+            self.log.debug(f"Args: {args}")
+            self.log.debug(f"Final command + args: {self.cmd + args}")
+            self.log.debug("=== End AWSSpawner Parameters ===")
             
             # Validate required parameters before calling _run_task with specific error messages
             missing_params = []
@@ -331,7 +324,7 @@ class AWSSpawner(Spawner):
             
             # Validate environment variables
             env_vars = self.get_env()
-            self.log.info(f"Environment variables count: {len(env_vars)}")
+            self.log.debug(f"Environment variables count: {len(env_vars)}")
             
             empty_env_vars = [name for name, value in env_vars.items() if not name or not name.strip()]
             if empty_env_vars:
@@ -482,7 +475,7 @@ def _ensure_stopped_task(logger, session, task_cluster_name, task_arn):
 def _get_task_port(logger, session, task_cluster_name, task_arn, container_name):
     """Get the actual port used by the task from run_task response"""
     described_task = _describe_task(logger, session, task_cluster_name, task_arn)
-    logger.info(described_task)
+    logger.debug(described_task)
 
     if not described_task:
         return None
@@ -790,7 +783,7 @@ def _describe_task(logger, session, task_cluster_name, task_arn):
     client = session.client("ecs")
 
     described_tasks = client.describe_tasks(cluster=task_cluster_name, tasks=[task_arn])
-    logger.info(described_tasks)
+    logger.debug(described_tasks)
     # Very strangely, sometimes 'tasks' is returned, sometimes 'task'
     # Also, creating a task seems to be eventually consistent, so it might
     # not be present at all
@@ -963,33 +956,33 @@ def _run_task(
         }
         
     # Print all parameters before calling run_task for debugging
-    logger.info("=== ECS run_task Parameters ===")
-    logger.info(f"cluster: '{task_cluster_name}'")
-    logger.info(f"taskDefinition: '{task_definition_arn}'")
-    logger.info(f"launch_type: {launch_type}")
-    logger.info(f"assign_public_ip: {assign_public_ip}")
-    logger.info(f"task_role_arn: '{task_role_arn}'")
-    logger.info(f"task_container_name: '{task_container_name}'")
-    logger.info(f"task_security_groups: {task_security_groups}")
-    logger.info(f"task_subnets: {task_subnets}")
-    logger.info(f"task_command_and_args: {task_command_and_args}")
-    logger.info(f"cpu: {cpu}")
-    logger.info(f"memory: {memory}")
-    logger.info(f"memory_reservation: {memory_reservation}")
-    logger.info(f"args_join: '{args_join}'")
-    logger.info(f"username: '{username}'")
-    logger.info(f"owner_tag_name: '{owner_tag_name}'")
-    logger.info(f"propagate_tags: {propagate_tags}")
-    logger.info(f"enable_ecs_managed_tags: {enable_ecs_managed_tags}")
-    logger.info(f"placement_constraints: {placement_constraints}")
+    logger.debug("=== ECS run_task Parameters ===")
+    logger.debug(f"cluster: '{task_cluster_name}'")
+    logger.debug(f"taskDefinition: '{task_definition_arn}'")
+    logger.debug(f"launch_type: {launch_type}")
+    logger.debug(f"assign_public_ip: {assign_public_ip}")
+    logger.debug(f"task_role_arn: '{task_role_arn}'")
+    logger.debug(f"task_container_name: '{task_container_name}'")
+    logger.debug(f"task_security_groups: {task_security_groups}")
+    logger.debug(f"task_subnets: {task_subnets}")
+    logger.debug(f"task_command_and_args: {task_command_and_args}")
+    logger.debug(f"cpu: {cpu}")
+    logger.debug(f"memory: {memory}")
+    logger.debug(f"memory_reservation: {memory_reservation}")
+    logger.debug(f"args_join: '{args_join}'")
+    logger.debug(f"username: '{username}'")
+    logger.debug(f"owner_tag_name: '{owner_tag_name}'")
+    logger.debug(f"propagate_tags: {propagate_tags}")
+    logger.debug(f"enable_ecs_managed_tags: {enable_ecs_managed_tags}")
+    logger.debug(f"placement_constraints: {placement_constraints}")
     
-    logger.info("=== Environment Variables ===")
+    logger.debug("=== Environment Variables ===")
     for name, value in task_env.items():
         # Don't log sensitive values, just show the key and value length
         #if any(sensitive in name.upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
-        #    logger.info(f"  {name}: [REDACTED - {len(str(value))} chars]")
+        #    logger.debug(f"  {name}: [REDACTED - {len(str(value))} chars]")
         #else:
-        logger.info(f"  {name}: '{value}'")
+        logger.debug(f"  {name}: '{value}'")
     
     logger.info("=== Final ECS API Request ===")
     # Create a copy for logging (without sensitive data)
@@ -1001,8 +994,8 @@ def _run_task(
                     #if any(sensitive in env_var['name'].upper() for sensitive in ['TOKEN', 'KEY', 'SECRET', 'PASSWORD']):
                     #    env_var['value'] = f"[REDACTED - {len(env_var['value'])} chars]"
     
-    logger.info(f"ECS run_task request payload: {log_dict_data}")
-    logger.info("=== End Parameters ===")
+    logger.debug(f"ECS run_task request payload: {log_dict_data}")
+    logger.debug("=== End Parameters ===")
     
     try:
         logger.info("Calling ECS run_task...")
@@ -1010,7 +1003,7 @@ def _run_task(
         
         # Log the response for debugging
         logger.info("=== ECS run_task Response ===")
-        logger.info(f"Response: {response}")
+        logger.debug(f"Response: {response}")
         logger.info("=== End Response ===")
         
         return response

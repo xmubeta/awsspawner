@@ -72,7 +72,7 @@ c.AWSSpawner.memory_reservation = 1024  # 1 GB
 
 # Notebook configuration
 c.AWSSpawner.notebook_scheme = 'http'  # or 'https' if using SSL
-c.AWSSpawner.notebook_args = ['--NotebookApp.allow_origin=*']
+c.AWSSpawner.notebook_args = ['--allow-root', '--ip=0.0.0.0','--port=80', '--NotebookApp.allow_origin=*']
 
 # IAM Role (optional)
 c.AWSSpawner.task_role_arn = 'arn:aws:iam::123456789012:role/your-task-role'
@@ -87,17 +87,13 @@ c.AWSSpawner.task_owner_tag_name = 'Jupyter-User'  # Default value
 c.AWSSpawner.propagate_tags = 'TASK_DEFINITION'  # Options: 'TASK_DEFINITION', 'SERVICE', 'NONE'
 c.AWSSpawner.enable_ecs_managed_tags = True  # Enable ECS managed tags
 
-# ECS Anywhere specific settings (optional)
-c.AWSSpawner.port_range_start = 8000  # Start of port range for dynamic allocation
-c.AWSSpawner.port_range_end = 9000    # End of port range for dynamic allocation
-c.AWSSpawner.use_dynamic_port = True  # Use dynamic port allocation
 c.AWSSpawner.placement_constraints = [
     {'type': 'memberOf', 'expression': 'attribute:ecs.instance-type =~ t3.*'}
 ]
 
 # Hub connectivity (only needed if ECS Anywhere containers can't reach JupyterHub)
 # c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'  # Uncomment if needed
-c.JupyterHub.hub_ip = 'xxx.xxx.xxx.xxx'
+
 ```
 
 ## Authentication
@@ -234,11 +230,6 @@ This spawner supports ECS Anywhere, allowing you to run JupyterHub notebooks on 
 ```python
 # Enable ECS Anywhere
 c.AWSSpawner.launch_type = 'EXTERNAL'
-
-# Configure port range for dynamic allocation (optional)
-c.AWSSpawner.port_range_start = 8000
-c.AWSSpawner.port_range_end = 9000
-c.AWSSpawner.use_dynamic_port = True
 
 # IMPORTANT: Configure Hub connectivity only if needed for ECS Anywhere
 # c.AWSSpawner.hub_connect_url = 'http://your-jupyterhub-server:8000'
